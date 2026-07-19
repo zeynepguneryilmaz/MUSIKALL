@@ -1,0 +1,11 @@
+numpy
+scipy
+matplotlib
+pygame
+biopython
+pillow
+pandas
+scikit-learn
+jinja2
+PySide6
+xlsxwriter
