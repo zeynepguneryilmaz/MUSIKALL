@@ -5,7 +5,9 @@ pygame
 biopython
 pillow
 pandas
+networkx
 scikit-learn
-jinja2
+midiutil
 PySide6
 xlsxwriter
+mplcursors
