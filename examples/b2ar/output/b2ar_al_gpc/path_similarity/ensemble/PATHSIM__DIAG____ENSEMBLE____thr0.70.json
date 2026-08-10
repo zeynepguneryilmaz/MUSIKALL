@@ -1,0 +1,32 @@
+{
+  "pdb_key": "__ENSEMBLE__",
+  "pdb_base": "__ENSEMBLE__",
+  "paths_total": 480,
+  "paths_used": 480,
+  "nodes_seen": 480,
+  "nodes_mapped": 3170,
+  "clustering_method": "threshold_graph_connected_components",
+  "similarity_threshold": 0.7,
+  "n_clusters": 2,
+  "cluster_sizes": [
+    475,
+    5
+  ],
+  "cost_source_priority": [
+    "path_entry_cost_field",
+    "pdata_parallel_cost_list",
+    "edgeweight_matrix_from_index_sequence"
+  ],
+  "edgeweight_matrix_found": true,
+  "unmapped_examples": [],
+  "out_of_range_examples": [],
+  "skipped_all_unmapped": 0,
+  "path_input_policy": "use_global_indices_directly_if_already_present",
+  "display_label_policy": "convert_paths_to_residues",
+  "outputs": [
+    "C:\\Users\\DELL\\Documents\\MUSIKALL Projects\\b2ar_al_gpc\\path_similarity\\ensemble\\PATHSIM____ENSEMBLE____K480__thr0.70.png",
+    "C:\\Users\\DELL\\Documents\\MUSIKALL Projects\\b2ar_al_gpc\\path_similarity\\ensemble\\PATHSIM__CLUSTER_SIZES____ENSEMBLE____K480__thr0.70.png",
+    "C:\\Users\\DELL\\Documents\\MUSIKALL Projects\\b2ar_al_gpc\\path_similarity\\ensemble\\PATHSIM__REPRESENTATIVE_PATHS____ENSEMBLE____K480__thr0.70.png",
+    "C:\\Users\\DELL\\Documents\\MUSIKALL Projects\\b2ar_al_gpc\\path_similarity\\ensemble\\PATHSIM__SUMMARY____ENSEMBLE____K480__thr0.70.xlsx"
+  ]
+}
