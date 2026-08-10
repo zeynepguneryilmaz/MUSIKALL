@@ -1,0 +1,33 @@
+{
+  "pdb_key": "ribo4v51_",
+  "pdb_base": "ribo4v51_",
+  "paths_total": 180,
+  "paths_used": 180,
+  "nodes_seen": 180,
+  "nodes_mapped": 4213,
+  "clustering_method": "threshold_graph_connected_components",
+  "similarity_threshold": 0.7,
+  "n_clusters": 3,
+  "cluster_sizes": [
+    120,
+    54,
+    6
+  ],
+  "cost_source_priority": [
+    "path_entry_cost_field",
+    "pdata_parallel_cost_list",
+    "edgeweight_matrix_from_index_sequence"
+  ],
+  "edgeweight_matrix_found": true,
+  "unmapped_examples": [],
+  "out_of_range_examples": [],
+  "skipped_all_unmapped": 0,
+  "path_input_policy": "use_global_indices_directly_if_already_present",
+  "display_label_policy": "convert_paths_to_residues",
+  "outputs": [
+    "C:\\Users\\ozde_zeynep\\Documents\\MUSIKALL Projects\\riboo__\\path_similarity\\per_structure\\ribo4v51_\\PATHSIM__ribo4v51___K180__thr0.70.png",
+    "C:\\Users\\ozde_zeynep\\Documents\\MUSIKALL Projects\\riboo__\\path_similarity\\per_structure\\ribo4v51_\\PATHSIM__CLUSTER_SIZES__ribo4v51___K180__thr0.70.png",
+    "C:\\Users\\ozde_zeynep\\Documents\\MUSIKALL Projects\\riboo__\\path_similarity\\per_structure\\ribo4v51_\\PATHSIM__REPRESENTATIVE_PATHS__ribo4v51___K180__thr0.70.png",
+    "C:\\Users\\ozde_zeynep\\Documents\\MUSIKALL Projects\\riboo__\\path_similarity\\per_structure\\ribo4v51_\\PATHSIM__SUMMARY__ribo4v51___K180__thr0.70.xlsx"
+  ]
+}
