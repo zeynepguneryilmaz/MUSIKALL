@@ -1,0 +1,35 @@
+{
+  "pdb_key": "3p0g",
+  "pdb_base": "3p0g",
+  "paths_total": 240,
+  "paths_used": 240,
+  "nodes_seen": 240,
+  "nodes_mapped": 1435,
+  "clustering_method": "threshold_graph_connected_components",
+  "similarity_threshold": 0.7,
+  "n_clusters": 5,
+  "cluster_sizes": [
+    210,
+    24,
+    3,
+    2,
+    1
+  ],
+  "cost_source_priority": [
+    "path_entry_cost_field",
+    "pdata_parallel_cost_list",
+    "edgeweight_matrix_from_index_sequence"
+  ],
+  "edgeweight_matrix_found": true,
+  "unmapped_examples": [],
+  "out_of_range_examples": [],
+  "skipped_all_unmapped": 0,
+  "path_input_policy": "use_global_indices_directly_if_already_present",
+  "display_label_policy": "convert_paths_to_residues",
+  "outputs": [
+    "C:\\Users\\DELL\\Documents\\MUSIKALL Projects\\b2ar_as_al\\path_similarity\\per_structure\\3p0g\\PATHSIM__COSINE_ORDERED__3p0g__K240__thr0.70.png",
+    "C:\\Users\\DELL\\Documents\\MUSIKALL Projects\\b2ar_as_al\\path_similarity\\per_structure\\3p0g\\PATHSIM__CLUSTER_SIZES__3p0g__K240__thr0.70.png",
+    "C:\\Users\\DELL\\Documents\\MUSIKALL Projects\\b2ar_as_al\\path_similarity\\per_structure\\3p0g\\PATHSIM__REPRESENTATIVE_PATHS__3p0g__K240__thr0.70.png",
+    "C:\\Users\\DELL\\Documents\\MUSIKALL Projects\\b2ar_as_al\\path_similarity\\per_structure\\3p0g\\PATHSIM__SUMMARY__3p0g__K240__thr0.70.xlsx"
+  ]
+}

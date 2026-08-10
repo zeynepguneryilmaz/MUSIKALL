@@ -1,0 +1,113 @@
+✅ Job 'b2ar_as_al' created at C:\Users\DELL\Documents\MUSIKALL Projects\b2ar_as_al
+📂 2 PDB files selected.
+✅ 2RH1.pdb was processed and saved to:
+   C:\Users\DELL\Documents\MUSIKALL Projects\b2ar_as_al\pdb_files\2RH1.pdb
+📌 Chains read:
+   • A: 282 residues
+📌 Total nodes (standard residues): 282
+✅ 3P0G.pdb was processed and saved to:
+   C:\Users\DELL\Documents\MUSIKALL Projects\b2ar_as_al\pdb_files\3P0G.pdb
+📌 Chains read:
+   • A: 284 residues
+📌 Total nodes (standard residues): 284
+🔬 Calculating Adjacency matrices with cutoff 4.5Å...
+✅ adj & edgeweight matrices saved for 2rh1.
+✅ adj & edgeweight matrices saved for 3p0g.
+✅ Adjacency matrices stage completed.
+🔗 Alignment step before K-shortest…
+🔍 Starting alignment for C:\Users\DELL\Documents\MUSIKALL Projects\b2ar_as_al…
+ℹ️ Using already loaded reference '2rh1' from C:\Users\DELL\Documents\MUSIKALL Projects\b2ar_as_al\pdb_files\2RH1.pdb
+✅ Mapping results saved to Excel.
+✅ Mapping successfully completed!
+⏳ Calculating k=20 shortest paths…
+✅ Paths calculated & converted.
+✅ Interactive viewer cache prepared.
+🧩 Backbone Ensemble: selected structures = 2/2
+Backbone 2rh1:
+  paths_total=180 paths_used=180 skipped_all_unmapped=0
+  nodes_seen=1090 nodes_mapped=1090 one_based_hint=False
+  N(adj)=282  N(final)=282  used(m)=54
+  out=C:\Users\DELL\Documents\MUSIKALL Projects\b2ar_as_al\cooccurrence_backbone\per_structure\2rh1\BACKBONE__PERCENT__2rh1__K180__m54.png
+Backbone 3p0g:
+  paths_total=180 paths_used=180 skipped_all_unmapped=0
+  nodes_seen=1074 nodes_mapped=1074 one_based_hint=False
+  N(adj)=284  N(final)=284  used(m)=52
+  out=C:\Users\DELL\Documents\MUSIKALL Projects\b2ar_as_al\cooccurrence_backbone\per_structure\3p0g\BACKBONE__PERCENT__3p0g__K180__m52.png
+🧬 Backbone Ensemble: building ENSEMBLE from 2 structures (ref index-space=2rh1) | pairs=18
+Backbone __ENSEMBLE__:
+  paths_total=360 paths_used=360 skipped_all_unmapped=0
+  nodes_seen=2164 nodes_mapped=2164 one_based_hint=False
+  N(adj)=282  N(final)=282  used(m)=58
+  out=C:\Users\DELL\Documents\MUSIKALL Projects\b2ar_as_al\cooccurrence_backbone\ensemble\BACKBONE__PERCENT____ENSEMBLE____K360__m58.png
+✅ Backbone Ensemble: ENSEMBLE outputs saved.
+🧩 Backbone Ensemble: selected structures = 2/2
+Backbone 2rh1:
+  paths_total=240 paths_used=240 skipped_all_unmapped=0
+  nodes_seen=1438 nodes_mapped=1438 one_based_hint=False
+  N(adj)=282  N(final)=282  used(m)=57
+  out=C:\Users\DELL\Documents\MUSIKALL Projects\b2ar_as_al\cooccurrence_backbone\per_structure\2rh1\BACKBONE__PERCENT__2rh1__K240__m57.png
+Backbone 3p0g:
+  paths_total=240 paths_used=240 skipped_all_unmapped=0
+  nodes_seen=1435 nodes_mapped=1435 one_based_hint=False
+  N(adj)=284  N(final)=284  used(m)=55
+  out=C:\Users\DELL\Documents\MUSIKALL Projects\b2ar_as_al\cooccurrence_backbone\per_structure\3p0g\BACKBONE__PERCENT__3p0g__K240__m55.png
+🧬 Backbone Ensemble: building ENSEMBLE from 2 structures (ref index-space=2rh1) | pairs=23
+Backbone __ENSEMBLE__:
+  paths_total=480 paths_used=480 skipped_all_unmapped=0
+  nodes_seen=2873 nodes_mapped=2873 one_based_hint=False
+  N(adj)=282  N(final)=282  used(m)=61
+  out=C:\Users\DELL\Documents\MUSIKALL Projects\b2ar_as_al\cooccurrence_backbone\ensemble\BACKBONE__PERCENT____ENSEMBLE____K480__m61.png
+✅ Backbone Ensemble: ENSEMBLE outputs saved.
+🧩 Path Similarity Ensemble: selected structures = 2/2
+PathSimilarity 2rh1:
+  paths_total=240 paths_used=240 skipped_all_unmapped=0
+  nodes_seen=240 nodes_mapped=1438
+  threshold=0.70 clusters=3
+  edgeweight_matrix_found=True
+  out=C:\Users\DELL\Documents\MUSIKALL Projects\b2ar_as_al\path_similarity\per_structure\2rh1\PATHSIM__COSINE_ORDERED__2rh1__K240__thr0.70.png
+PathSimilarity 3p0g:
+  paths_total=240 paths_used=240 skipped_all_unmapped=0
+  nodes_seen=240 nodes_mapped=1435
+  threshold=0.70 clusters=5
+  edgeweight_matrix_found=True
+  out=C:\Users\DELL\Documents\MUSIKALL Projects\b2ar_as_al\path_similarity\per_structure\3p0g\PATHSIM__COSINE_ORDERED__3p0g__K240__thr0.70.png
+🧬 Path Similarity Ensemble: building ENSEMBLE from 2 structures (ref index-space=2rh1) | pairs=23
+PathSimilarity __ENSEMBLE__:
+  paths_total=480 paths_used=480 skipped_all_unmapped=0
+  nodes_seen=480 nodes_mapped=2873
+  threshold=0.70 clusters=2
+  edgeweight_matrix_found=True
+  out=C:\Users\DELL\Documents\MUSIKALL Projects\b2ar_as_al\path_similarity\ensemble\PATHSIM__COSINE_ORDERED____ENSEMBLE____K480__thr0.70.png
+✅ Path Similarity Ensemble: ENSEMBLE outputs saved.
+🧪 Running property tracks for 3 structures (dims=hydrophobicity, charge, aromaticity, polarity, min_score=1, only_figures=False)
+[DEBUG] PropertyTracks | pdb=2rh1 | canon=2rh1 | freq_map_n=54 | chains=1 | residues=282
+[DEBUG] rows_returned=54 for 2rh1
+[DEBUG] PropertyTracks | pdb=3p0g | canon=3p0g | freq_map_n=52 | chains=1 | residues=284
+[DEBUG] rows_returned=52 for 3p0g
+[DEBUG] PropertyTracks | pdb=__ensemble__ | canon=__ensemble__ | freq_map_n=76 | chains=0 | residues=0
+⚠ residue_chain_map missing for __ensemble__ (canon=__ensemble__). Skipped.
+📁 Property table saved to:
+   • C:\Users\DELL\Documents\MUSIKALL Projects\b2ar_as_al\property_tracks_all.xlsx
+📊 Property track figure saved for 2rh1:
+   • C:\Users\DELL\Documents\MUSIKALL Projects\b2ar_as_al\2rh1\2rh1_property_tracks_score1.png
+📊 Property track figure saved for 3p0g:
+   • C:\Users\DELL\Documents\MUSIKALL Projects\b2ar_as_al\3p0g\3p0g_property_tracks_score1.png
+🧩 All structures combined property track saved:
+   • C:\Users\DELL\Documents\MUSIKALL Projects\b2ar_as_al\ALL_property_tracks_score1.png
+🎨 Saving Colored PDBs (per-PDB + GLOBAL/TOTAL)...
+📁 Job dir: C:\Users\DELL\Documents\MUSIKALL Projects\b2ar_as_al
+📁 PDB dir: C:\Users\DELL\Documents\MUSIKALL Projects\b2ar_as_al\pdb_files
+🎨 Saving colored PDBs: per-PDB normalized + per-PDB TOTAL + GLOBAL TOTAL...
+✅ Per-PDB normalized colored: C:\Users\DELL\Documents\MUSIKALL Projects\b2ar_as_al\2RH1\2RH1_colored.pdb
+✅ Per-PDB TOTAL colored: C:\Users\DELL\Documents\MUSIKALL Projects\b2ar_as_al\2RH1\2RH1_total_colored.pdb
+✅ Per-PDB normalized colored: C:\Users\DELL\Documents\MUSIKALL Projects\b2ar_as_al\3P0G\3P0G_colored.pdb
+✅ Per-PDB TOTAL colored: C:\Users\DELL\Documents\MUSIKALL Projects\b2ar_as_al\3P0G\3P0G_total_colored.pdb
+✅ GLOBAL TOTAL colored: C:\Users\DELL\Documents\MUSIKALL Projects\b2ar_as_al\GLOBAL_TOTAL__2RH1__colored.pdb
+🎨 Finished saving colored PDBs.
+🎨 Per-PDB colored models saved.
+✅ GLOBAL TOTAL colored PDB written: C:\Users\DELL\Documents\MUSIKALL Projects\b2ar_as_al\GLOBAL_TOTAL__2RH1__colored.pdb
+✅ GLOBAL TOTAL map saved: C:\Users\DELL\Documents\MUSIKALL Projects\b2ar_as_al\GLOBAL_TOTAL__frequencies.json
+🎨 GLOBAL/TOTAL colored reference PDB saved in the job folder.
+✅ Interactive viewer cache prepared.
+✅ Interactive viewer opened instantly from cache.
+✅ Done. 3 MIDI file(s) created.
