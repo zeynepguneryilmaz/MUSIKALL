@@ -1,0 +1,43 @@
+{
+  "pdb_key": "protein_fr08772_aporun3_cl4_cent2.56",
+  "pdb_base": "protein_fr08772_aporun3_cl4_cent2.56",
+  "paths_total": 320,
+  "paths_used": 320,
+  "nodes_seen": 3127,
+  "nodes_mapped": 3127,
+  "clustering_method": "threshold_graph_connected_components",
+  "similarity_threshold": 0.7,
+  "n_clusters": 14,
+  "cluster_sizes": [
+    272,
+    33,
+    2,
+    2,
+    2,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "cost_source_priority": [
+    "path_entry_cost_field",
+    "pdata_parallel_cost_list",
+    "edgeweight_matrix_from_mapped_sequence"
+  ],
+  "edgeweight_matrix_found": true,
+  "unmapped_examples": [],
+  "out_of_range_examples": [],
+  "one_based_hint": false,
+  "skipped_all_unmapped": 0,
+  "outputs": [
+    "C:\\Users\\ozde_zeynep\\Documents\\MUSIKALL Projects\\gapdh apo\\path_similarity\\per_structure\\protein_fr08772_aporun3_cl4_cent2.56\\PATHSIM__COSINE_ORDERED__protein_fr08772_aporun3_cl4_cent2.56__K320__thr0.70.png",
+    "C:\\Users\\ozde_zeynep\\Documents\\MUSIKALL Projects\\gapdh apo\\path_similarity\\per_structure\\protein_fr08772_aporun3_cl4_cent2.56\\PATHSIM__CLUSTER_SIZES__protein_fr08772_aporun3_cl4_cent2.56__K320__thr0.70.png",
+    "C:\\Users\\ozde_zeynep\\Documents\\MUSIKALL Projects\\gapdh apo\\path_similarity\\per_structure\\protein_fr08772_aporun3_cl4_cent2.56\\PATHSIM__REPRESENTATIVE_PATHS__protein_fr08772_aporun3_cl4_cent2.56__K320__thr0.70.png",
+    "C:\\Users\\ozde_zeynep\\Documents\\MUSIKALL Projects\\gapdh apo\\path_similarity\\per_structure\\protein_fr08772_aporun3_cl4_cent2.56\\PATHSIM__SUMMARY__protein_fr08772_aporun3_cl4_cent2.56__K320__thr0.70.xlsx"
+  ]
+}
