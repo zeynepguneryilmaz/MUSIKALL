@@ -1,0 +1,29 @@
+name: GPCR mutation download check
+
+on:
+  push:
+    branches:
+      - analysis/gpcr-ksp-ml-rerun-20260907
+    paths:
+      - 'analysis_gpcr_ksp/inspect_mutation_download.py'
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install pandas openpyxl requests
+      - run: python analysis_gpcr_ksp/inspect_mutation_download.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gpcr-mutation-download-check
+          path: analysis_gpcr_ksp/mutation_check
+          if-no-files-found: warn
+          retention-days: 7
