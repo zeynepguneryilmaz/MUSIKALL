@@ -1,0 +1,16 @@
+name: GPCR mutant API check
+on:
+  push:
+    branches: [analysis/gpcr-ksp-ml-rerun-20260907]
+    paths: ['ml_eval/inspect_mutant_api.py']
+  workflow_dispatch:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions: {contents: read}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: pip install requests
+      - run: python ml_eval/inspect_mutant_api.py
