@@ -8,8 +8,8 @@ type: software
 authors:
   - given-names: Ö. Zeynep
     family-names: Güner Yılmaz
-  - given-names: Özge
-    family-names: Kurkcuoğlu
+  - given-names: Ozge
+    family-names: Kurkcuoglu
 repository-code: https://github.com/zeynepguneryilmaz/MUSIKALL
 url: https://github.com/zeynepguneryilmaz/MUSIKALL
 license: MIT
