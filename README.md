@@ -68,7 +68,7 @@ Citation metadata for MUSIKALL is maintained in the repository-level [`CITATION.
 
 When the MUSIKALL journal article is published, the recommended article citation can be added to `CITATION.cff` as the preferred citation without changing the software interface.
 
-Official repository: https://github.com/zeynepguneryilmaz/MUSIKALL
+
 
 ## License
 
