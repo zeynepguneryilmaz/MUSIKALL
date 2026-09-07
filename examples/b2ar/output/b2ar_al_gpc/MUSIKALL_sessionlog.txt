@@ -1,0 +1,107 @@
+✅ Job 'b2ar_al_gpc' created at C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\b2ar_al_gpc
+📂 2 PDB files selected.
+✅ 2RH1.pdb was processed and saved to:
+   C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\b2ar_al_gpc\pdb_files\2RH1.pdb
+📌 Chains read:
+   • A: 282 residues
+📌 Total nodes (standard residues): 282
+📌 Node/index mode: legacy-compatible (no true SEGNAME collision).
+✅ 3P0G.pdb was processed and saved to:
+   C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\b2ar_al_gpc\pdb_files\3P0G.pdb
+📌 Chains read:
+   • A: 284 residues
+📌 Total nodes (standard residues): 284
+📌 Node/index mode: legacy-compatible (no true SEGNAME collision).
+🔬 Calculating Adjacency matrices with cutoff 4.5Å...
+✅ adj & edgeweight matrices saved for 2rh1.
+✅ adj & edgeweight matrices saved for 3p0g.
+✅ Adjacency matrices stage completed.
+🔗 Alignment step before K-shortest…
+🔍 Starting alignment for C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\b2ar_al_gpc…
+ℹ️ Using already loaded reference '2rh1' from C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\b2ar_al_gpc\pdb_files\2RH1.pdb
+✅ Reference source resolved in 2rh1: A:79 -> index 50
+✅ Reference source resolved in 2rh1: A:121 -> index 92
+✅ Reference source resolved in 2rh1: A:282 -> index 221
+✅ Reference sink resolved in 2rh1: A:131 -> index 102
+✅ Reference sink resolved in 2rh1: A:219 -> index 190
+✅ Reference sink resolved in 2rh1: A:272 -> index 211
+✅ Reference sink resolved in 2rh1: A:326 -> index 265
+📌 Reference [2rh1] seeded for KSP: 3 source(s), 4 sink(s).
+📌 Target [3p0g] projected for KSP: 3 source(s), 4 sink(s).
+✅ Mapping results saved to Excel.
+✅ Mapping successfully completed!
+⏳ Calculating k=20 shortest paths…
+✅ Paths calculated & converted.
+🧩 Backbone Ensemble: selected structures = 2/2
+Backbone 2rh1:
+  paths_total=240 paths_used=240 skipped_all_unmapped=0
+  nodes_seen=1626 nodes_mapped=1626 one_based_hint=False
+  N(adj)=282  N(final)=282  used(m)=59
+  out=C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\b2ar_al_gpc\cooccurrence_backbone\per_structure\2rh1\BACKBONE__PERCENT__2rh1__K240__m59.png
+Backbone 3p0g:
+  paths_total=240 paths_used=240 skipped_all_unmapped=0
+  nodes_seen=1544 nodes_mapped=1544 one_based_hint=False
+  N(adj)=284  N(final)=284  used(m)=67
+  out=C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\b2ar_al_gpc\cooccurrence_backbone\per_structure\3p0g\BACKBONE__PERCENT__3p0g__K240__m67.png
+🧬 Backbone Ensemble: building ENSEMBLE from 2 structures (ref index-space=2rh1) | pairs=22
+Backbone __ENSEMBLE__:
+  paths_total=480 paths_used=480 skipped_all_unmapped=0
+  nodes_seen=3170 nodes_mapped=3170 one_based_hint=False
+  N(adj)=282  N(final)=282  used(m)=74
+  out=C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\b2ar_al_gpc\cooccurrence_backbone\ensemble\BACKBONE__PERCENT____ENSEMBLE____K480__m74.png
+✅ Backbone Ensemble: ENSEMBLE outputs saved.
+🧩 Path Similarity Ensemble: selected structures = 2/2
+PathSimilarity 2rh1:
+  paths_total=240 paths_used=240 skipped_all_unmapped=0
+  nodes_seen=1626 nodes_mapped=1626 one_based_hint=False
+  threshold=0.70 clusters=7
+  edgeweight_matrix_found=True
+  out=C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\b2ar_al_gpc\path_similarity\per_structure\2rh1\PATHSIM__COSINE_ORDERED__2rh1__K240__thr0.70.png
+PathSimilarity 3p0g:
+  paths_total=240 paths_used=240 skipped_all_unmapped=0
+  nodes_seen=1544 nodes_mapped=1544 one_based_hint=False
+  threshold=0.70 clusters=5
+  edgeweight_matrix_found=True
+  out=C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\b2ar_al_gpc\path_similarity\per_structure\3p0g\PATHSIM__COSINE_ORDERED__3p0g__K240__thr0.70.png
+🧬 Path Similarity Ensemble: building ENSEMBLE from 2 structures (ref index-space=2rh1) | pairs=22
+PathSimilarity __ENSEMBLE__:
+  paths_total=480 paths_used=480 skipped_all_unmapped=0
+  nodes_seen=3170 nodes_mapped=3170 one_based_hint=False
+  threshold=0.70 clusters=2
+  edgeweight_matrix_found=True
+  out=C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\b2ar_al_gpc\path_similarity\ensemble\PATHSIM__COSINE_ORDERED____ENSEMBLE____K480__thr0.70.png
+✅ Path Similarity Ensemble: ENSEMBLE outputs saved.
+🧪 Running property tracks for 3 structures (dims=hydrophobicity, charge, aromaticity, polarity, min_score=1, only_figures=False)
+[DEBUG] PropertyTracks | pdb=2rh1 | canon=2rh1 | freq_map_n=55 | chains=1 | residues=282
+[DEBUG] rows_returned=55 for 2rh1
+[DEBUG] PropertyTracks | pdb=3p0g | canon=3p0g | freq_map_n=64 | chains=1 | residues=284
+[DEBUG] rows_returned=64 for 3p0g
+[DEBUG] PropertyTracks | pdb=__ensemble__ | canon=__ensemble__ | freq_map_n=0 | chains=0 | residues=0
+⚠ residue_chain_map missing for __ensemble__ (canon=__ensemble__). Skipped.
+📁 Property table saved to:
+   • C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\b2ar_al_gpc\property_tracks_all.xlsx
+🎨 Shared property-track legend saved:
+   • C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\b2ar_al_gpc\PROPERTY_TRACKS__LEGEND.png
+📊 Property track figure saved for 2rh1:
+   • C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\b2ar_al_gpc\2rh1\2rh1_property_tracks_score1.png
+📊 Property track figure saved for 3p0g:
+   • C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\b2ar_al_gpc\3p0g\3p0g_property_tracks_score1.png
+🧩 All structures combined property track saved:
+   • C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\b2ar_al_gpc\ALL_property_tracks_score1.png
+🎨 Saving Colored PDBs (per-PDB + GLOBAL/TOTAL)...
+📁 Job dir: C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\b2ar_al_gpc
+📁 PDB dir: C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\b2ar_al_gpc\pdb_files
+🎨 Saving colored PDBs: per-PDB normalized + per-PDB TOTAL + GLOBAL TOTAL...
+✅ Per-PDB normalized colored: C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\b2ar_al_gpc\2RH1\2RH1_colored.pdb
+✅ Per-PDB TOTAL colored: C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\b2ar_al_gpc\2RH1\2RH1_total_colored.pdb
+✅ Per-PDB normalized colored: C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\b2ar_al_gpc\3P0G\3P0G_colored.pdb
+✅ Per-PDB TOTAL colored: C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\b2ar_al_gpc\3P0G\3P0G_total_colored.pdb
+✅ GLOBAL TOTAL colored: C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\b2ar_al_gpc\GLOBAL_TOTAL__2RH1__colored.pdb
+🎨 Finished saving colored PDBs.
+🎨 Per-PDB colored models saved.
+✅ GLOBAL TOTAL colored PDB written: C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\b2ar_al_gpc\GLOBAL_TOTAL__2RH1__colored.pdb
+✅ GLOBAL TOTAL map saved: C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\b2ar_al_gpc\GLOBAL_TOTAL__frequencies.json
+🎨 GLOBAL/TOTAL colored reference PDB saved in the job folder.
+✅ Interactive viewer cache prepared.
+✅ Done. 2 MIDI file(s) created.
+✅ Done. 480 MIDI file(s) created.

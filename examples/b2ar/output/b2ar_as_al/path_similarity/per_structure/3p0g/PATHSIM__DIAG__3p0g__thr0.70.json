@@ -1,0 +1,37 @@
+{
+  "pdb_key": "3p0g",
+  "pdb_base": "3p0g",
+  "paths_total": 180,
+  "paths_used": 180,
+  "nodes_seen": 1074,
+  "nodes_mapped": 1074,
+  "clustering_method": "threshold_graph_connected_components",
+  "similarity_threshold": 0.7,
+  "n_clusters": 8,
+  "cluster_sizes": [
+    121,
+    34,
+    14,
+    4,
+    3,
+    2,
+    1,
+    1
+  ],
+  "cost_source_priority": [
+    "path_entry_cost_field",
+    "pdata_parallel_cost_list",
+    "edgeweight_matrix_from_mapped_sequence"
+  ],
+  "edgeweight_matrix_found": true,
+  "unmapped_examples": [],
+  "out_of_range_examples": [],
+  "one_based_hint": false,
+  "skipped_all_unmapped": 0,
+  "outputs": [
+    "C:\\Users\\ozde_zeynep\\Documents\\MUSIKALL Projects\\b2ar_as_al\\path_similarity\\per_structure\\3p0g\\PATHSIM__COSINE_ORDERED__3p0g__K180__thr0.70.png",
+    "C:\\Users\\ozde_zeynep\\Documents\\MUSIKALL Projects\\b2ar_as_al\\path_similarity\\per_structure\\3p0g\\PATHSIM__CLUSTER_SIZES__3p0g__K180__thr0.70.png",
+    "C:\\Users\\ozde_zeynep\\Documents\\MUSIKALL Projects\\b2ar_as_al\\path_similarity\\per_structure\\3p0g\\PATHSIM__REPRESENTATIVE_PATHS__3p0g__K180__thr0.70.png",
+    "C:\\Users\\ozde_zeynep\\Documents\\MUSIKALL Projects\\b2ar_as_al\\path_similarity\\per_structure\\3p0g\\PATHSIM__SUMMARY__3p0g__K180__thr0.70.xlsx"
+  ]
+}

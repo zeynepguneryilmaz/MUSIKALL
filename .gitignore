@@ -1,6 +1,6 @@
 build/
 dist/
-output/
+/output/
 
 __pycache__/
 *.pyc
