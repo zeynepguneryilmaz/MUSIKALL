@@ -1,27 +1,17 @@
-# Example datasets will be added later
-examples/
-
-# PyInstaller and installer outputs
 build/
 dist/
 output/
 
-# Python cache
 __pycache__/
 *.pyc
 *.pyo
 
-# Virtual environments
 venv/
 .venv/
 
-# Installer binaries
 *.exe
-
-# Local installer script
 musikall.iss
 
-# OS/editor files
 .DS_Store
 Thumbs.db
 .vscode/
