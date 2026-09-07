@@ -20,7 +20,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install dependencies
-        run: pip install numpy pandas scipy scikit-learn xgboost requests openpyxl
+        run: pip install numpy pandas scipy scikit-learn xgboost requests openpyxl tabulate
       - name: Download corrected KSP artifacts
         uses: actions/download-artifact@v4
         with:
