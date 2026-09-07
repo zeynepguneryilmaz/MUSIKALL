@@ -1,110 +1,76 @@
-import json
-import threading
-from tkinter import messagebox, ttk, filedialog
-
-import matplotlib
-from matplotlib import pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from matplotlib.figure import Figure
-import ctypes
 import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+import os, threading, subprocess, json, pickle, shutil, tempfile, re, sys, ctypes, webbrowser
 from PIL import Image, ImageTk
-
-def _resource_path(rel: str) -> str:
-
-    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-        base = sys._MEIPASS
-    else:
-        base = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base, rel)
+from tkinter import filedialog, messagebox
+from pathlib import Path
+import re
+import time
+from tkinter import ttk, messagebox
 
 
-def _set_windows_appid(appid: str = "MUSIKALL.App"):
 
-    if sys.platform.startswith("win"):
-        try:
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(appid)
-        except Exception:
-            pass
+# Heavy scientific dependencies are loaded after the Welcome window is visible.
+# This keeps startup responsive while preserving the same analysis functions.
+_BACKEND_READY = False
+_BACKEND_ERROR = None
+
+def _load_analysis_backend():
+    global _BACKEND_READY, _BACKEND_ERROR
+    global PDBParser, MIDIFile, np
+    global create_job_folder, load_pdb_files, run_adj_matrix, parse_residue_input
+    global run_residue_mapping, calculate_shortest_paths, save_colored_pdbs
+    global build_3d_html, extract_start_end_residues_safe, play_midi, stop_midi
+    global note_to_midi, apply_transpose_clamp, get_triad_presets, MusicOptions
+    global run_cooccurrence_backbone_for_one_structure, run_cooccurrence_backbone_ensemble
+    global run_path_similarity_for_one_structure, run_path_similarity_ensemble
+    global NOTE_NAMES, ALL_RESIDUES, build_default_aa_mapping
+    global aa_mapping_to_residue_mapping, pr_generate_audio
+    try:
+        import numpy as _np
+        from Bio.PDB import PDBParser as _PDBParser
+        from midiutil import MIDIFile as _MIDIFile
+        import MUSIKALL_functions1 as _mf
+
+        np = _np
+        PDBParser = _PDBParser
+        MIDIFile = _MIDIFile
+        create_job_folder = _mf.create_job_folder
+        load_pdb_files = _mf.load_pdb_files
+        run_adj_matrix = _mf.run_adj_matrix
+        parse_residue_input = _mf.parse_residue_input
+        run_residue_mapping = _mf.run_residue_mapping
+        calculate_shortest_paths = _mf.calculate_shortest_paths
+        save_colored_pdbs = _mf.save_colored_pdbs
+        build_3d_html = _mf.build_3d_html
+        extract_start_end_residues_safe = _mf.extract_start_end_residues_safe
+        play_midi = _mf.play_midi
+        stop_midi = _mf.stop_midi
+        note_to_midi = _mf.note_to_midi
+        apply_transpose_clamp = _mf.apply_transpose_clamp
+        get_triad_presets = _mf.get_triad_presets
+        MusicOptions = _mf.MusicOptions
+        run_cooccurrence_backbone_for_one_structure = _mf.run_cooccurrence_backbone_for_one_structure
+        run_cooccurrence_backbone_ensemble = _mf.run_cooccurrence_backbone_ensemble
+        run_path_similarity_for_one_structure = _mf.run_path_similarity_for_one_structure
+        run_path_similarity_ensemble = _mf.run_path_similarity_ensemble
+        NOTE_NAMES = _mf.NOTE_NAMES
+        ALL_RESIDUES = _mf.ALL_RESIDUES
+        build_default_aa_mapping = _mf.build_default_aa_mapping
+        aa_mapping_to_residue_mapping = _mf.aa_mapping_to_residue_mapping
+        pr_generate_audio = _mf.generate_audio
+        _BACKEND_READY = True
+    except Exception as exc:
+        _BACKEND_ERROR = exc
 
 
-def _qt_3d_viewer_process(tab_payloads):
-    import sys
-    import os
-
-    from PySide6.QtCore import QUrl
-    from PySide6.QtWidgets import QApplication, QMainWindow, QTabWidget
-    from PySide6.QtWebEngineWidgets import QWebEngineView
-
-    class ViewerWindow(QMainWindow):
-        def closeEvent(self, event):
-            try:
-                tabs = self.centralWidget()
-                if tabs is not None:
-                    for i in range(tabs.count()):
-                        w = tabs.widget(i)
-                        try:
-                            if w is not None:
-                                w.setHtml("")
-                                w.deleteLater()
-                        except Exception:
-                            pass
-
-                app = QApplication.instance()
-                if app is not None:
-                    app.quit()
-            except Exception:
-                pass
-
-            event.accept()
-
-            import os
-            os._exit(0)
-
-    app = QApplication.instance()
-    if app is None:
-        app = QApplication(sys.argv)
-
-    app.setQuitOnLastWindowClosed(True)
-
-    win = ViewerWindow()
-    win.setWindowTitle("3D Structures")
-    win.resize(1200, 900)
-
-    tabs = QTabWidget()
-    win.setCentralWidget(tabs)
-
-    for item in tab_payloads:
-        title = item["title"]
-        html = item["html"]
-
-        view = QWebEngineView()
-        view.setHtml(html, QUrl("file:///"))
-        tabs.addTab(view, title)
-
-    win.show()
-    app.exec()
-
-    os._exit(0)
-
-from MUSIKALL_functions1 import (
-    create_job_folder,
-    load_pdb_files,
-    run_adj_matrix,
-    parse_residue_input,
-    play_midi,
-    stop_midi,
-    MusicOptions,
-    NOTE_NAMES,
-    ALL_RESIDUES,
-    build_default_aa_mapping,
-    aa_mapping_to_residue_mapping,
-    generate_audio as pr_generate_audio
-)
 
 
 def _unique_filename(path):
-
+    """
+    Return a non-conflicting output filename.
+    base.png -> base.png if available; otherwise base_2.png, base_3.png, etc.
+    """
     import os
     if not os.path.exists(path):
         return path
@@ -119,12 +85,29 @@ def _unique_filename(path):
 
 import os, sys
 
+def _resource_path(rel: str) -> str:
+    """
+    Resolve resource paths for both PyInstaller builds and normal Python execution.
+    Never rely on the current working directory.
+    """
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        base = sys._MEIPASS                       # ...\MUSIKALL\_internal
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))  # Directory containing MUSIKALL_gui1.py
+    return os.path.join(base, rel)
 
 
+def _set_windows_appid(appid: str = "MUSIKALL.App"):
+    """Set the Windows application ID for consistent taskbar and Alt+Tab branding."""
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(appid)
+    except Exception:
+        pass
 
 
+# --- THEMES / PALETTES  ---
 palettes = {
-    "aqua": {
+    "aqua": {  # airy, neutral, modern
         "bg": "#F7FAFC",
         "surface": "#FFFFFF",
         "muted": "#E0F2FE",
@@ -135,7 +118,7 @@ palettes = {
         "border": "#BAE6FD",
         "focus": "#38BDF8"
     },
-    "lilac": {
+    "lilac": {  # pastel, soft, scientific/creative
         "bg": "#FAF5FF",
         "surface": "#FFFFFF",
         "muted": "#E9D5FF",
@@ -146,7 +129,7 @@ palettes = {
         "border": "#DDD6FE",
         "focus": "#A78BFA"
     },
-    "sunset": {
+    "sunset": {  # warm, energetic, high-visibility
         "bg": "#FFF7ED",
         "surface": "#FFFFFF",
         "muted": "#FED7AA",
@@ -157,7 +140,7 @@ palettes = {
         "border": "#FDBA74",
         "focus": "#FB923C"
     },
-    "forest": {
+    "forest": {  # natural, biology-friendly
         "bg": "#F0FDF4",
         "surface": "#FFFFFF",
         "muted": "#DCFCE7",
@@ -168,7 +151,7 @@ palettes = {
         "border": "#BBF7D0",
         "focus": "#4ADE80"
     },
-    "slate": {
+    "slate": {  # professional, neutral, institutional
         "bg": "#F8FAFC",
         "surface": "#FFFFFF",
         "muted": "#E2E8F0",
@@ -179,7 +162,7 @@ palettes = {
         "border": "#CBD5E1",
         "focus": "#94A3B8"
     },
-    "dark": {
+    "dark": {  # dark, polished, modern
         "bg": "#111827",
         "surface": "#1F2937",
         "muted": "#374151",
@@ -192,6 +175,7 @@ palettes = {
     }
 }
 
+# --- Simple Tooltip helper for Tkinter ---
 class Tooltip:
     def __init__(self, widget, text, delay=350):
         self.widget = widget
@@ -234,58 +218,6 @@ class Tooltip:
 
 class MUSIKALL_GUI(tk.Tk):
 
-    def __init__(self, *args, **kwargs):
-
-            super().__init__(*args, **kwargs)
-
-            self.title("MUSIKALL")
-            self.geometry("1200x750")
-
-
-            _set_windows_appid("MUSIKALL.Prod")
-
-
-            ico_path = _resource_path("icon.ico")
-            png_path = _resource_path("icon.png")
-
-            self._icon_ref = None
-            self.icon_image = None
-
-
-            if sys.platform.startswith("win") and os.path.exists(ico_path):
-                try:
-                    self.iconbitmap(ico_path)
-                except Exception:
-                    pass
-
-
-            if os.path.exists(png_path):
-                try:
-                    self._icon_ref = tk.PhotoImage(file=png_path)
-                    self.iconphoto(True, self._icon_ref)
-                except Exception:
-                    try:
-                        self.icon_image = Image.open(png_path)
-                    except Exception:
-                        self.icon_image = None
-
-            self.set_theme(palette="aqua")
-            self.create_menu()
-            self.show_welcome_screen()
-
-            self.state = {
-                "jobname": None,
-                "pdb_info_dict": None,
-                "paths_dict": None,
-                "paths_dict_2": None,
-                "all_normalized_frequencies": None
-            }
-            self.all_normalized_frequencies = {}
-
-            self._interactive_cache = {}
-            self._interactive_cache_building = False
-            self._interactive_cache_ready = False
-
     def build_interactive_cache(self, force=False):
         import os
         import threading
@@ -298,51 +230,62 @@ class MUSIKALL_GUI(tk.Tk):
 
         def worker():
             self._interactive_cache_building = True
+
             try:
                 from MUSIKALL_functions1 import (
                     build_3d_html_colored,
                     extract_start_end_residues_safe,
                     extract_residue_nodes_and_coords,
-                    _base_key,
                     _resolve_job_dir,
                 )
 
                 def _viewer_key_from_token(token):
-                    """
-                    Exact viewer key:
-                        CHAIN:RESSEQ
-                        CHAIN:RESSEQICODE
-                        SEG:CHAIN:RESSEQ
-                        SEG:CHAIN:RESSEQICODE
-                    """
                     if token is None:
                         return None
+
                     try:
-                        parts = [p.strip() for p in str(token).split(":") if p.strip() != ""]
+                        parts = [
+                            p.strip()
+                            for p in str(token).split(":")
+                            if p.strip() != ""
+                        ]
+
                         if len(parts) == 2:
-                            ch, rn = parts
                             seg = ""
+                            ch = parts[0]
+                            rn = parts[1]
+
                         elif len(parts) >= 3:
                             seg = ":".join(parts[:-2]).strip()
                             ch = parts[-2]
                             rn = parts[-1]
+
                         else:
                             return None
 
                         ch = str(ch).strip().upper()
                         rn = str(rn).strip()
+
                         if not ch or not rn:
                             return None
 
-                        return f"{seg}:{ch}:{rn}" if seg else f"{ch}:{rn}"
+                        return (
+                            f"{seg}:{ch}:{rn}"
+                            if seg
+                            else f"{ch}:{rn}"
+                        )
+
                     except Exception:
                         return None
 
                 jobname = self.jobname_entry.get().strip()
+
                 if not jobname:
                     return
+
                 if not getattr(self, "paths_dict_2", None):
                     return
+
                 if not getattr(self, "pdb_info_dict", None):
                     return
 
@@ -350,45 +293,71 @@ class MUSIKALL_GUI(tk.Tk):
                 cache = {}
 
                 for pdb_key in sorted(self.paths_dict_2.keys()):
+
                     try:
-                        pdb_data = self.pdb_info_dict.get(pdb_key, {})
+                        pdb_data = self.pdb_info_dict.get(pdb_key, {}) or {}
+
                         orig_path = pdb_data.get("file_path")
                         if not orig_path:
                             continue
 
-                        pdb_base = os.path.splitext(os.path.basename(orig_path))[0]
+                        pdb_base = os.path.splitext(
+                            os.path.basename(orig_path)
+                        )[0]
 
-                        colored_pdb = os.path.join(job_dir, pdb_base, f"{pdb_base}_colored.pdb")
-                        colored_cif = os.path.join(job_dir, pdb_base, f"{pdb_base}_colored.cif")
+                        colored_pdb = os.path.join(
+                            job_dir,
+                            pdb_base,
+                            f"{pdb_base}_colored.pdb"
+                        )
+
+                        colored_cif = os.path.join(
+                            job_dir,
+                            pdb_base,
+                            f"{pdb_base}_colored.cif"
+                        )
 
                         if os.path.exists(colored_pdb):
                             colored_path = colored_pdb
+
                         elif os.path.exists(colored_cif):
                             colored_path = colored_cif
+
                         else:
                             continue
 
-                        start_residues, end_residues = extract_start_end_residues_safe(
-                            self.paths_dict_2, pdb_key
+                        start_residues, end_residues = (
+                            extract_start_end_residues_safe(
+                                self.paths_dict_2,
+                                pdb_key
+                            )
                         )
 
-                        # exact structure keys from colored model
-                        _nodes, node_coords, residue_names = extract_residue_nodes_and_coords(colored_path)
-                        structure_key_set = set(node_coords.keys())  # e.g. A:123 or A:123A
+                        _nodes, node_coords, residue_names = (
+                            extract_residue_nodes_and_coords(
+                                colored_path
+                            )
+                        )
+
+                        structure_key_set = set(node_coords.keys())
 
                         adj = pdb_data.get("adj_matrix")
-                        node_index_map = pdb_data.get("node_index_map", {}) or {}
+                        node_index_map = (
+                                pdb_data.get("node_index_map", {}) or {}
+                        )
 
-                        # graph nodes = exact precomputed graph nodes that also exist in structure
                         graph_nodes = []
                         seen_graph_keys = set()
                         index_to_key = {}
                         all_edges = []
 
                         for idx, token in node_index_map.items():
+
                             vk = _viewer_key_from_token(token)
+
                             if vk is None:
                                 continue
+
                             if vk not in structure_key_set:
                                 continue
 
@@ -396,15 +365,21 @@ class MUSIKALL_GUI(tk.Tk):
 
                             if vk not in seen_graph_keys:
                                 seen_graph_keys.add(vk)
-                                ch, rn = vk.split(":", 1)
+
+                                # SEGNAME-safe:
+                                # EB:C:530 -> EB:C | 530
+                                ch, rn = vk.rsplit(":", 1)
+
                                 graph_nodes.append([ch, rn])
 
-                        # edges from precomputed adjacency
                         if adj is not None:
+
                             try:
                                 n = adj.shape[0]
+
                                 for i in range(n):
                                     for j in range(i + 1, n):
+
                                         try:
                                             if float(adj[i, j]) == 0.0:
                                                 continue
@@ -413,12 +388,25 @@ class MUSIKALL_GUI(tk.Tk):
 
                                         akey = index_to_key.get(i)
                                         bkey = index_to_key.get(j)
-                                        if akey is None or bkey is None or akey == bkey:
+
+                                        if (
+                                                akey is None
+                                                or bkey is None
+                                                or akey == bkey
+                                        ):
                                             continue
 
-                                        ach, arn = akey.split(":", 1)
-                                        bch, brn = bkey.split(":", 1)
-                                        all_edges.append([[ach, arn], [bch, brn]])
+                                        # SEGNAME-safe
+                                        ach, arn = akey.rsplit(":", 1)
+                                        bch, brn = bkey.rsplit(":", 1)
+
+                                        all_edges.append(
+                                            [
+                                                [ach, arn],
+                                                [bch, brn]
+                                            ]
+                                        )
+
                             except Exception:
                                 pass
 
@@ -433,23 +421,41 @@ class MUSIKALL_GUI(tk.Tk):
                             graph_edges=all_edges,
                         )
 
-                        html_path = os.path.join(job_dir, pdb_base, f"{pdb_base}_interactive.html")
-                        with open(html_path, "w", encoding="utf-8") as fh:
+                        html_path = os.path.join(
+                            job_dir,
+                            pdb_base,
+                            f"{pdb_base}_interactive.html"
+                        )
+
+                        with open(
+                                html_path,
+                                "w",
+                                encoding="utf-8"
+                        ) as fh:
                             fh.write(html)
 
                         cache[pdb_key] = html_path
 
                     except Exception as e:
-                        self.log_output(f"⚠ interactive cache failed for {pdb_key}: {e}\n")
+                        self.log_output(
+                            f"⚠ interactive cache failed "
+                            f"for {pdb_key}: {e}\n"
+                        )
 
                 self._interactive_cache = cache
                 self._interactive_cache_ready = True
-                self.log_output("✅ Interactive viewer cache prepared.\n")
+
+                self.log_output(
+                    "✅ Interactive viewer cache prepared.\n"
+                )
 
             finally:
                 self._interactive_cache_building = False
 
-        threading.Thread(target=worker, daemon=True).start()
+        threading.Thread(
+            target=worker,
+            daemon=True
+        ).start()
 
     def _make_colorbar(self, parent_frame):
 
@@ -461,23 +467,20 @@ class MUSIKALL_GUI(tk.Tk):
         fig = Figure(figsize=(0.6, 3.5), dpi=100)
         cax = fig.add_axes([0.25, 0.05, 0.5, 0.9])
 
+        # fixed 0..1 range
         norm = mcolors.Normalize(vmin=0.0, vmax=1.0)
-
         sm = cm.ScalarMappable(cmap=cm.plasma, norm=norm)
         sm.set_array([])
 
-        cb = fig.colorbar(
-            sm,
-            cax=cax,
-            orientation='vertical',
-            ticks=[0.0, 0.25, 0.5, 0.75, 1.0]
-        )
+        cb = fig.colorbar(sm, cax=cax, orientation='vertical',
+                          ticks=[0.0, 0.25, 0.5, 0.75, 1.0])
         cb.set_label('Normalized Frequency (B-factor 0–1)', fontsize=8)
 
         canvas = FigureCanvasTkAgg(fig, master=parent_frame)
         canvas.draw()
         canvas.get_tk_widget().pack(fill="y")
 
+        # retain a reference if needed
         if not hasattr(self, "_embedded_canvases"):
             self._embedded_canvases = []
         self._embedded_canvases.append(canvas)
@@ -497,14 +500,18 @@ class MUSIKALL_GUI(tk.Tk):
 
     def _lazy_matplotlib(self):
         import matplotlib
-
+        # Tkinter ile en uyumlu backend
         matplotlib.use('TkAgg', force=True)
         import matplotlib as mpl
         import matplotlib.pyplot as plt
-        plt.rcParams['figure.max_open_warning'] = 0
-        mpl.rcParams['agg.path.chunksize'] = 10000
+        plt.rcParams['figure.max_open_warning'] = 0  # suppress excessive-open-figure warnings
+        mpl.rcParams['agg.path.chunksize'] = 10000  # chunk long paths for large 3D drawings
 
-
+        # Import only the required objects
+        import matplotlib.pyplot as plt
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        # Do not call plt.figure here.
         self._mpl_ready = True
 
     def set_theme(self, palette="aqua"):
@@ -512,7 +519,7 @@ class MUSIKALL_GUI(tk.Tk):
         self.current_palette = P
         self.current_theme = palette
 
-
+        # Window background
         self.configure(bg=P["bg"])
 
         style = ttk.Style(self)
@@ -536,26 +543,29 @@ class MUSIKALL_GUI(tk.Tk):
 
         self.recolor_raw_widgets()
 
-
+        # General backgrounds
         style.configure("TFrame", background=P["bg"])
         style.configure("Card.TFrame", background=P["bg"])
         style.configure("Muted.TFrame", background=P["muted"])
 
         style.configure("TLabel", background=P["bg"], foreground=P["text"])
         style.configure("Sub.TLabel", background=P["bg"], foreground=P["subtext"])
+        style.configure("SectionHint.TLabel", background=P["bg"], foreground=P["subtext"], font=("Segoe UI", 9))
+        style.configure("FieldLabel.TLabel", background=P["bg"], foreground=P["text"], font=("Segoe UI", 9, "bold"))
+        style.configure("Quiet.TButton", background=P["surface"], foreground=P["text"], padding=(9, 6))
 
-
+        # LabelFrame section headers
         style.configure(
             "Card.TLabelframe",
-            background=P["bg"],
+            background=P["bg"],  # keep the background consistent with the active theme
             bordercolor=P["border"],
             relief="solid"
         )
         style.configure(
             "Card.TLabelframe.Label",
-            background=P["bg"],
+            background=P["bg"],  # keep the title area consistent with the active theme
             foreground=P["text"],
-            font=("Arial", 11, "bold")
+            font=("Segoe UI", 10, "bold")
         )
 
         # Button
@@ -623,7 +633,7 @@ class MUSIKALL_GUI(tk.Tk):
                 if not (w and w.winfo_exists()):
                     continue
                 w.configure(bg=P["bg"])
-                # içindeki ham Tk Label/Frame vb. de güncellensin
+                # update nested raw Tk Label/Frame widgets as well
                 for child in w.winfo_children():
                     try:
                         if isinstance(child, (tk.Label, tk.Frame)):
@@ -632,7 +642,7 @@ class MUSIKALL_GUI(tk.Tk):
                         pass
         except Exception:
             pass
-
+        # Apply the theme to the main frames as well
         for attr in ("welcome_frame", "main_pw", "left_col", "right_col"):
             if hasattr(self, attr):
                 frame = getattr(self, attr)
@@ -642,14 +652,14 @@ class MUSIKALL_GUI(tk.Tk):
     def recolor_raw_widgets(self):
         P = self.current_palette
 
-
+        # Apply the theme to all canvases
         for child in self.winfo_children():
             self._recolor_recursive(child, P)
 
-
+        # Main window
         self.configure(bg=P["bg"])
 
-
+        # Recolor the welcome frame when present
         if hasattr(self, "welcome_frame") and self.welcome_frame.winfo_exists():
             self.welcome_frame.configure(bg=P["bg"])
             for child in self.welcome_frame.winfo_children():
@@ -658,11 +668,11 @@ class MUSIKALL_GUI(tk.Tk):
                 elif isinstance(child, tk.Button):
                     child.configure(bg=P["accent"], fg=P["accent_fg"], activebackground=P["focus"])
 
-        # Eğer main_pw (PanedWindow) varsa
+        # Recolor the main PanedWindow when present
         if hasattr(self, "main_pw") and self.main_pw.winfo_exists():
             self.main_pw.configure(bg=P["bg"])
 
-        # Eğer sol/sağ kolon varsa
+        # Recolor the left/right columns when present
         if hasattr(self, "left_col") and self.left_col.winfo_exists():
             self.left_col.configure(bg=P["bg"])
         if hasattr(self, "right_col") and self.right_col.winfo_exists():
@@ -680,8 +690,8 @@ class MUSIKALL_GUI(tk.Tk):
 
     def _split_token(self, node: str) -> tuple[str, str, str]:
         """
-        "CHAIN:RES" veya "SEG:CHAIN:RES" → (seg, chain, res)
-        seg yoksa "" döner.
+        Convert "CHAIN:RES" or "SEG:CHAIN:RES" into (seg, chain, res).
+        Returns an empty segment string when SEGNAME is absent.
         """
         if node is None:
             return ("", "", "")
@@ -697,14 +707,122 @@ class MUSIKALL_GUI(tk.Tk):
             return (seg, ch, rn)
         return ("", "", s)
 
+    def __init__(self, *args, **kwargs):
+        import os, sys
+
+        def resource_path(relative_path):
+            """Get absolute path to resource, works for dev and for PyInstaller EXE."""
+            try:
+                # Inside a PyInstaller executable
+                base_path = sys._MEIPASS
+            except Exception:
+                # Normal Python execution
+                base_path = os.path.abspath(".")
+            return os.path.join(base_path, relative_path)
+
+        super().__init__(*args, **kwargs)
+        self.title("MUSIKALL")
+        self.geometry("1200x750")
+
+        # --- Icon setup ---
+        try:
+            from ctypes import windll  # Windows only
+            def _set_windows_appid(appid):
+                try:
+                    windll.shell32.SetCurrentProcessExplicitAppUserModelID(appid)
+                except Exception:
+                    pass
+        except ImportError:
+            def _set_windows_appid(appid):
+                pass
+
+        def _resource_path(fname: str) -> str:
+            """Resolve bundled resource files in both development and PyInstaller builds."""
+            import sys, os
+            if hasattr(sys, "_MEIPASS"):
+                return os.path.join(sys._MEIPASS, fname)
+            return os.path.join(os.path.abspath("."), fname)
+
+        self.icon_image = Image.open(resource_path("icon.png"))
+        from tkinter import PhotoImage
+        self.iconphoto(False, PhotoImage(file=resource_path("icon.png")))
+
+        # --- Icon setup ---
+        _set_windows_appid("MUSIKALL.Prod")
+        ico_path = _resource_path("icon.ico")
+        png_path = _resource_path("icon.png")
+
+        # 1) ICO is preferred on Windows
+        if os.path.exists(ico_path):
+            try:
+                self.iconbitmap(ico_path)
+            except Exception:
+                pass
+
+        # 2) PNG fallback (Linux/macOS + Windows)
+        try:
+            if os.path.exists(png_path):
+                # PIL-free fallback: use Tk PhotoImage directly
+                import tkinter as tk
+                _img = tk.PhotoImage(file=png_path)
+                self.iconphoto(True, _img)
+                self._icon_ref = _img  # Keep a reference to prevent garbage collection
+        except Exception:
+            pass
+
+        self.set_theme(palette="aqua")
+        self.create_menu()
+        self.show_welcome_screen()
+        self._backend_ready = False
+        self._backend_error = None
+        self.after(75, self._start_backend_prewarm)
+        self.state = {
+            "jobname": None,
+            "pdb_info_dict": None,
+            "paths_dict": None,
+            "paths_dict_2": None,
+            "all_normalized_frequencies": None
+        }
+        self.all_normalized_frequencies = {}
+        self._interactive_cache = {}
+        self._interactive_cache_building = False
+        self._interactive_cache_ready = False
+        self._viewer_proc = None
+
+
+    from PIL import Image, ImageTk
+
+    def _start_backend_prewarm(self):
+        """Load the scientific backend after the first window has been painted."""
+        if getattr(self, "_backend_loading", False) or getattr(self, "_backend_ready", False):
+            return
+        self._backend_loading = True
+
+        def worker():
+            global _BACKEND_READY, _BACKEND_ERROR
+            _load_analysis_backend()
+            self.after(0, self._finish_backend_prewarm)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_backend_prewarm(self):
+        self._backend_loading = False
+        self._backend_ready = bool(_BACKEND_READY)
+        self._backend_error = _BACKEND_ERROR
+        if hasattr(self, "backend_status_label") and self.backend_status_label.winfo_exists():
+            if self._backend_ready:
+                self.backend_status_label.configure(text="Ready")
+            else:
+                self.backend_status_label.configure(text="Analysis engine could not be loaded")
+        if hasattr(self, "start_button") and self.start_button.winfo_exists():
+            self.start_button.configure(state=("normal" if self._backend_ready else "disabled"))
 
     def show_welcome_screen(self):
         """Shows the welcome screen with a Start button and an improved image display."""
-
         self.welcome_frame = tk.Frame(self, bg=self.current_palette["bg"])
         self.welcome_frame.pack(fill="both", expand=True)
 
-        # Başlık
+        # Title
         tk.Label(
             self.welcome_frame,
             text="Welcome to MUSIKALL!",
@@ -713,17 +831,13 @@ class MUSIKALL_GUI(tk.Tk):
             fg=self.current_palette["text"]
         ).pack(pady=20)
 
-        try:
-            icon_path = _resource_path("icon.png")
-            if os.path.exists(icon_path):
-                img = Image.open(icon_path)
-                img = img.resize((100, 100), Image.LANCZOS)
-                self.logo_img = ImageTk.PhotoImage(img)
-                tk.Label(self.welcome_frame, image=self.logo_img,
-                         bg=self.current_palette["bg"]).pack(pady=10)
-        except Exception:
-            pass
+        # Icon (PNG)
+        img = Image.open(_resource_path("icon.png"))
+        img = img.resize((100, 100), Image.LANCZOS) 
+        self.logo_img = ImageTk.PhotoImage(img)  # keep a persistent image reference
+        tk.Label(self.welcome_frame, image=self.logo_img, bg=self.current_palette["bg"]).pack(pady=10)
 
+        # Subtitle
         tk.Label(
             self.welcome_frame,
             text="Transcribing allosteric communication pathways in protein structures to audio-visual",
@@ -732,30 +846,32 @@ class MUSIKALL_GUI(tk.Tk):
             fg=self.current_palette["text"]
         ).pack(pady=10)
 
-
-        ttk.Button(
+        # Start button
+        self.start_button = ttk.Button(
             self.welcome_frame,
             text="Start",
             command=self.show_main_interface,
-            style="Accent.TButton"
-        ).pack(pady=20)
+            style="Accent.TButton",
+            state="disabled"
+        )
+        self.start_button.pack(pady=(12, 4))
+        self.backend_status_label = ttk.Label(
+            self.welcome_frame, text="Preparing analysis engine…", style="Sub.TLabel"
+        )
+        self.backend_status_label.pack(pady=(0, 8))
 
 
-        try:
-            welcome_path = _resource_path("welcome.png")
-            if os.path.exists(welcome_path):
-                img2 = Image.open(welcome_path)
-                img2 = img2.resize((720, 250), Image.LANCZOS)
-                self.welcome_img = ImageTk.PhotoImage(img2)
-                tk.Label(self.welcome_frame, image=self.welcome_img,
-                         bg=self.current_palette["bg"]).pack(pady=10)
-        except Exception:
-            pass
+        # Additional image below the Start button
+        img2 = Image.open(_resource_path("welcome.png"))
+        img2 = img2.resize((720, 250), Image.LANCZOS) 
+        self.welcome_img = ImageTk.PhotoImage(img2)
+        tk.Label(self.welcome_frame, image=self.welcome_img, bg=self.current_palette["bg"]).pack(pady=10)
 
-        # Copyright
+
+        # Copyright notice at the bottom of the window
         tk.Label(
             self.welcome_frame,
-            text="© 2026 Kurkcuoglu Levitas Lab, Istanbul Technical University. All rights reserved.",
+            text="© 2026 Kurkcuoglu Levitas Lab, Istanbul Technical University.  All rights reserved.",
             font=("Arial", 9, "italic"),
             bg=self.current_palette["bg"],
             fg=self.current_palette["text"]
@@ -777,10 +893,9 @@ class MUSIKALL_GUI(tk.Tk):
             )
         menu_bar.add_cascade(label="Theme", menu=theme_menu)
 
-
+        # File menu
         file_menu = tk.Menu(menu_bar, tearoff=0)
-        file_menu.add_command(label="💾 Save Job", command=self.save_job)
-        file_menu.add_command(label="📂 Load Job", command=self.load_job)
+        file_menu.add_command(label="Open Projects Folder", command=self.open_projects_folder)
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.quit)
 
@@ -790,11 +905,14 @@ class MUSIKALL_GUI(tk.Tk):
         help_menu = tk.Menu(menu_bar, tearoff=0)
         help_menu.add_command(label="📗 Quick Start", command=self.open_quick_start)
         help_menu.add_command(label="📘 User Guide", command=self.open_user_guide)
-        help_menu.add_command(label="ℹ Theory & Info", command=self.open_theory_info)
+        help_menu.add_command(label="ℹ Theory & Methods", command=self.open_theory_info)
         help_menu.add_command(label="🎧 Music Playground", command=self.open_music_playground)
+        help_menu.add_separator()
+        help_menu.add_command(label="🛠 Troubleshooting", command=self.open_troubleshooting)
+        help_menu.add_command(label="ⓘ About MUSIKALL", command=self.open_about_musikall)
         menu_bar.add_cascade(label="Help", menu=help_menu)
 
-
+        # Additional menus
         cite_menu = tk.Menu(menu_bar, tearoff=0)
         cite_menu.add_command(label="How to Cite", command=self.show_cite)
         menu_bar.add_cascade(label="Cite", menu=cite_menu)
@@ -805,1479 +923,1717 @@ class MUSIKALL_GUI(tk.Tk):
 
         self.config(menu=menu_bar)
 
-    def open_quick_start(self):
+
+
+    def open_projects_folder(self):
+        """Open the MUSIKALL Projects directory in the operating-system file browser."""
+        try:
+            from MUSIKALL_functions1 import get_projects_root
+            project_root = str(get_projects_root())
+            os.makedirs(project_root, exist_ok=True)
+
+            if sys.platform.startswith("win"):
+                os.startfile(project_root)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", project_root])
+            else:
+                subprocess.Popen(["xdg-open", project_root])
+        except Exception as e:
+            messagebox.showerror("Open Projects Folder", f"Could not open the projects folder:\n{e}")
+
+
+    def _open_help_document(self, title, subtitle, text, geometry="980x720", action_label=None, action_command=None):
+        """Render a searchable, navigable, theme-aware Help workspace."""
+        import tkinter.font as tkfont
+
+        P = getattr(self, "current_palette", palettes["aqua"])
         win = tk.Toplevel(self)
-        win.title("📗 MUSIKALL – Quick Start")
-        win.geometry("900x650")
+        win.title(title)
+        win.geometry(geometry)
+        win.minsize(860, 580)
+        win.configure(bg=P["bg"])
+        win.transient(self)
 
-        text = """
-        # 🚀 Quick Start (MUSIKALL)
+        outer = tk.Frame(win, bg=P["bg"])
+        outer.pack(fill="both", expand=True)
 
-        Go from **PDB → paths → visualization → MIDI** in the minimum number of steps.
+        # ------------------------------------------------------------------
+        # Header
+        # ------------------------------------------------------------------
+        header = tk.Frame(
+            outer,
+            bg=P["surface"],
+            highlightthickness=1,
+            highlightbackground=P["border"],
+        )
+        header.pack(fill="x", padx=18, pady=(18, 10))
 
-        ---
+        tk.Label(
+            header,
+            text=title,
+            anchor="w",
+            font=("Segoe UI", 20, "bold"),
+            bg=P["surface"],
+            fg=P["text"],
+        ).pack(fill="x", padx=22, pady=(18, 2))
 
-        ## 1) Create a Job
-        - Enter a **Job Name**
-        - Click **Create Job**
-        → MUSIKALL creates a job folder; all outputs are saved there.
+        tk.Label(
+            header,
+            text=subtitle,
+            anchor="w",
+            justify="left",
+            font=("Segoe UI", 10),
+            bg=P["surface"],
+            fg=P["subtext"],
+        ).pack(fill="x", padx=22, pady=(0, 12))
 
-        ---
+        # Help-page switcher + in-page search
+        tools = tk.Frame(header, bg=P["surface"])
+        tools.pack(fill="x", padx=22, pady=(0, 14))
 
-        ## 2) Upload PDBs
-        - Click **Upload PDBs**
-        - Select one or more `.pdb` files
-        → Files are copied into the job’s PDB folder.
+        tk.Label(
+            tools,
+            text="Help page",
+            font=("Segoe UI", 9, "bold"),
+            bg=P["surface"],
+            fg=P["subtext"],
+        ).pack(side="left", padx=(0, 6))
 
-        **Tip:** Put apo/bound/mutant conformers into the **same job** for direct comparison.
+        page_names = [
+            "Quick Start",
+            "User Guide",
+            "Theory & Methods",
+            "Music Playground",
+            "Troubleshooting",
+            "About MUSIKALL",
+        ]
+        title_to_page = {
+            "MUSIKALL — Quick Start": "Quick Start",
+            "MUSIKALL — User Guide": "User Guide",
+            "MUSIKALL — Theory & Methods": "Theory & Methods",
+            "MUSIKALL — Troubleshooting": "Troubleshooting",
+            "About MUSIKALL": "About MUSIKALL",
+            "MUSIKALL — About": "About MUSIKALL",
+        }
+        page_var = tk.StringVar(value=title_to_page.get(title, "Quick Start"))
+        page_cb = ttk.Combobox(
+            tools,
+            textvariable=page_var,
+            values=page_names,
+            state="readonly",
+            width=19,
+        )
+        page_cb.pack(side="left", padx=(0, 18))
 
-        ---
+        tk.Label(
+            tools,
+            text="Search this page",
+            font=("Segoe UI", 9, "bold"),
+            bg=P["surface"],
+            fg=P["subtext"],
+        ).pack(side="left", padx=(0, 6))
 
-        ## 3) Build the RIN (Adjacency + Edge Weights)
-        - Go to **Adjacency & Edge Weights**
-        - Set the **cutoff distance** (keep it the same across all structures in the job)
-        - Click **Run**
-        → MUSIKALL writes per-structure adjacency and edge-weight (cost) matrices in each PDB’s output folder.
+        search_var = tk.StringVar()
+        search_entry = ttk.Entry(tools, textvariable=search_var, width=28)
+        search_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
 
-        ---
+        search_prev_btn = ttk.Button(tools, text="◀", width=3)
+        search_prev_btn.pack(side="left", padx=(0, 3))
+        search_next_btn = ttk.Button(tools, text="▶", width=3)
+        search_next_btn.pack(side="left", padx=(0, 6))
 
-        ## 4) Select Sources & Sinks
+        search_status = tk.Label(
+            tools,
+            text="",
+            width=9,
+            anchor="w",
+            font=("Segoe UI", 9),
+            bg=P["surface"],
+            fg=P["subtext"],
+        )
+        search_status.pack(side="left")
 
-        Residues are specified using structured identifiers.
-        Basic format:
+        accent = tk.Frame(header, height=4, bg=P["accent"])
+        accent.pack(fill="x")
 
-        - `CHAIN,RESNUM`
-        - Ranges allowed: `A,150-153`
-        - Multiple selections separated by `;`
-        Example: `A,312-320;B,45-60`
+        # ------------------------------------------------------------------
+        # Resizable navigation/document split
+        # ------------------------------------------------------------------
+        body = tk.Frame(outer, bg=P["bg"])
+        body.pack(fill="both", expand=True, padx=18, pady=(0, 12))
 
-        Advanced formats (when needed):
+        split = tk.PanedWindow(
+            body,
+            orient="horizontal",
+            bg=P["bg"],
+            sashrelief="raised",
+            sashwidth=7,
+            bd=0,
+            showhandle=False,
+        )
+        split.pack(fill="both", expand=True)
 
-        If your structure contains insertion codes (icode) or segment names (segname),
-        you may need extended identifiers:
+        nav_card = tk.Frame(
+            split,
+            bg=P["surface"],
+            highlightthickness=1,
+            highlightbackground=P["border"],
+        )
+        doc_card = tk.Frame(
+            split,
+            bg=P["surface"],
+            highlightthickness=1,
+            highlightbackground=P["border"],
+        )
 
-        - `CHAIN:RESNUM`
-        - `CHAIN:RESNUM:ICODE`
-        - `SEG:CHAIN:RESNUM`
-        - `SEG:CHAIN:RESNUM:ICODE`
+        # The user can drag the sash to resize the Contents pane.
+        split.add(nav_card, minsize=150, width=240)
+        split.add(doc_card, minsize=420)
 
-        Examples:
-        - `A:150`
-        - `A:150:A`                 (with insertion code A)
-        - `PROT:A:150`
-        - `PROT:A:150:A`
+        tk.Label(
+            nav_card,
+            text="CONTENTS",
+            anchor="w",
+            font=("Segoe UI", 9, "bold"),
+            bg=P["surface"],
+            fg=P["subtext"],
+        ).pack(fill="x", padx=14, pady=(14, 6))
 
-        Notes:
-        - Use `;` to separate multiple chains or selections.
-        - Use `-` to define residue ranges.
-        - Residue identifiers must match exactly what appears in the PDB.
-        - For large complexes, including SEGNAME ensures unambiguous mapping.
+        tk.Label(
+            nav_card,
+            text="Drag the divider to resize",
+            anchor="w",
+            font=("Segoe UI", 8),
+            bg=P["surface"],
+            fg=P["subtext"],
+        ).pack(fill="x", padx=14, pady=(0, 6))
 
-        If unsure, inspect the PDB header or use the built-in residue listing tools.
+        nav_wrap = tk.Frame(nav_card, bg=P["surface"])
+        nav_wrap.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        nav_wrap.grid_rowconfigure(0, weight=1)
+        nav_wrap.grid_columnconfigure(0, weight=1)
 
-        ---
+        nav = tk.Listbox(
+            nav_wrap,
+            borderwidth=0,
+            highlightthickness=0,
+            font=("Segoe UI", 9),
+            activestyle="none",
+            bg=P["surface"],
+            fg=P["text"],
+            selectbackground=P["muted"],
+            selectforeground=P["text"],
+            exportselection=False,
+        )
+        nav.grid(row=0, column=0, sticky="nsew")
 
-        ## 5) Run K-Shortest Paths (KSP)
-        - Choose **K**
-        - Click **Run KSP**
-        → MUSIKALL computes K shortest routes for each source→sink pair and summarizes residue usage (frequency).
+        nav_vscroll = ttk.Scrollbar(nav_wrap, orient="vertical", command=nav.yview)
+        nav_vscroll.grid(row=0, column=1, sticky="ns")
+        nav_hscroll = ttk.Scrollbar(nav_wrap, orient="horizontal", command=nav.xview)
+        nav_hscroll.grid(row=1, column=0, sticky="ew")
+        nav.configure(
+            yscrollcommand=nav_vscroll.set,
+            xscrollcommand=nav_hscroll.set,
+        )
 
-        ---
+        doc_card.grid_rowconfigure(0, weight=1)
+        doc_card.grid_columnconfigure(0, weight=1)
 
-        ## 6) Visualize Hotspots (optional but recommended)
-        - **Save Colored PDBs** (frequency written into B-factor; open in PyMOL/Chimera and color by B-factor)
-        and/or
-        - **Show 3D Structures** (built-in viewer)
+        txt = tk.Text(
+            doc_card,
+            wrap="word",
+            borderwidth=0,
+            highlightthickness=0,
+            padx=28,
+            pady=22,
+            bg=P["surface"],
+            fg=P["text"],
+            insertbackground=P["text"],
+            font=("Segoe UI", 10),
+            spacing1=2,
+            spacing3=7,
+            cursor="arrow",
+        )
+        txt.grid(row=0, column=0, sticky="nsew")
 
-        ---
-
-        ## 7) (Optional) Co-occurrence Backbone
-        - Run **Co-occurrence/Backbone** after KSP
-        → Creates a residue×residue co-usage heatmap showing which residues tend to appear together across routes.
-
-        ---
-
-        ## 8) Generate Audio 🎶
-        - Configure mapping (Residue Grid), chord mode, tempo, velocity mode
-        - Choose output grouping:
-          - `per_path`, `per_pair`, or `per_pdb`
-        - Click **🎶 Generate Audio**
-        → MIDI files are saved under the job’s music output folder; the built-in player can audition them.
-
-        ---
-
-        ## Workflow Summary
-        **Create Job → Upload PDBs → Build RIN → Select Source/Sink → Run KSP → (Visualize / Backbone) → Generate Audio**
-        """
-
-        txt = tk.Text(win, wrap="word", font=("Arial", 12))
-        txt.insert("1.0", text)
-        txt.config(state="disabled", bg="white")
-        txt.pack(fill="both", expand=True, padx=10, pady=10)
-
-        scroll = ttk.Scrollbar(win, command=txt.yview)
+        scroll = ttk.Scrollbar(doc_card, orient="vertical", command=txt.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
         txt.configure(yscrollcommand=scroll.set)
-        scroll.pack(side="right", fill="y")
+
+        normal_font = tkfont.Font(family="Segoe UI", size=10)
+        h1_font = tkfont.Font(family="Segoe UI", size=17, weight="bold")
+        h2_font = tkfont.Font(family="Segoe UI", size=12, weight="bold")
+        h3_font = tkfont.Font(family="Segoe UI", size=10, weight="bold")
+        code_font = tkfont.Font(family="Consolas", size=9)
+
+        txt.tag_configure("h1", font=h1_font, foreground=P["text"], spacing1=8, spacing3=12)
+        txt.tag_configure("h2", font=h2_font, foreground=P["accent"], spacing1=14, spacing3=7)
+        txt.tag_configure("h3", font=h3_font, foreground=P["text"], spacing1=10, spacing3=5)
+        txt.tag_configure("body", font=normal_font, foreground=P["text"], lmargin1=0, lmargin2=0)
+        txt.tag_configure("bullet", font=normal_font, foreground=P["text"], lmargin1=14, lmargin2=30, spacing1=1, spacing3=3)
+        txt.tag_configure("code", font=code_font, foreground=P["text"], background=P["muted"], lmargin1=18, lmargin2=18, rmargin=18, spacing1=5, spacing3=5)
+        txt.tag_configure("inline", font=("Consolas", 9), foreground=P["text"], background=P["muted"])
+        txt.tag_configure("bold", font=("Segoe UI", 10, "bold"), foreground=P["text"])
+        txt.tag_configure("rule", foreground=P["border"], spacing1=8, spacing3=8)
+        txt.tag_configure("search_hit", background=P["muted"], foreground=P["text"])
+        txt.tag_configure("search_current", background=P["accent"], foreground=P["accent_fg"])
+
+        anchors = []
+        heading_counter = 0
+
+        def insert_inline_markup(line, base_tag="body"):
+            pattern = re.compile(r"(\*\*[^*]+\*\*|`[^`]+`)")
+            pos = 0
+            for m in pattern.finditer(line):
+                if m.start() > pos:
+                    txt.insert("end", line[pos:m.start()], base_tag)
+                token = m.group(0)
+                if token.startswith("**"):
+                    txt.insert("end", token[2:-2], "bold")
+                else:
+                    txt.insert("end", token[1:-1], "inline")
+                pos = m.end()
+            if pos < len(line):
+                txt.insert("end", line[pos:], base_tag)
+
+        for raw in text.strip().splitlines():
+            line = raw.rstrip()
+            stripped = line.strip()
+
+            if not stripped:
+                txt.insert("end", "\n", "body")
+                continue
+
+            if stripped.startswith("### "):
+                label = stripped[4:].strip()
+                mark = f"help_h_{heading_counter}"
+                heading_counter += 1
+                txt.mark_set(mark, "end")
+                txt.insert("end", label + "\n", "h3")
+                anchors.append((label, mark, 2))
+                continue
+
+            if stripped.startswith("## "):
+                label = stripped[3:].strip()
+                mark = f"help_h_{heading_counter}"
+                heading_counter += 1
+                txt.mark_set(mark, "end")
+                txt.insert("end", label + "\n", "h2")
+                anchors.append((label, mark, 1))
+                continue
+
+            if stripped.startswith("# "):
+                label = stripped[2:].strip()
+                mark = f"help_h_{heading_counter}"
+                heading_counter += 1
+                txt.mark_set(mark, "end")
+                txt.insert("end", label + "\n", "h1")
+                anchors.append((label, mark, 0))
+                continue
+
+            if stripped in ("---", "___"):
+                txt.insert("end", "────────────────────────────────────────\n", "rule")
+                continue
+
+            if line.startswith("    "):
+                txt.insert("end", stripped + "\n", "code")
+                continue
+
+            if stripped.startswith("- "):
+                txt.insert("end", "• ", "bullet")
+                insert_inline_markup(stripped[2:], "bullet")
+                txt.insert("end", "\n", "bullet")
+                continue
+
+            insert_inline_markup(stripped, "body")
+            txt.insert("end", "\n", "body")
+
+        for label, mark, level in anchors:
+            if level <= 1:
+                nav.insert("end", ("  " if level else "") + label)
+
+        nav_marks = [mark for _, mark, level in anchors if level <= 1]
+
+        # ------------------------------------------------------------------
+        # Contents navigation
+        # ------------------------------------------------------------------
+        def _scroll_to_nav_index(idx):
+            if not (0 <= idx < len(nav_marks)):
+                return
+            mark = nav_marks[idx]
+
+            def _do_scroll():
+                try:
+                    txt.yview(mark)
+                except Exception:
+                    try:
+                        txt.see(mark)
+                    except Exception:
+                        pass
+
+            win.after_idle(_do_scroll)
+
+        def jump_to_heading(_event=None):
+            sel = nav.curselection()
+            if sel:
+                _scroll_to_nav_index(int(sel[0]))
+
+        def jump_to_heading_click(event):
+            if nav.size() <= 0:
+                return
+            idx = int(nav.nearest(event.y))
+            if 0 <= idx < nav.size():
+                nav.selection_clear(0, "end")
+                nav.selection_set(idx)
+                nav.activate(idx)
+                _scroll_to_nav_index(idx)
+
+        nav.bind("<<ListboxSelect>>", jump_to_heading)
+        nav.bind("<ButtonRelease-1>", jump_to_heading_click, add="+")
+        nav.bind("<Return>", jump_to_heading)
+
+        # ------------------------------------------------------------------
+        # In-page search
+        # ------------------------------------------------------------------
+        search_matches = []
+        search_pos = {"index": -1, "query": ""}
+
+        def _clear_search_tags():
+            txt.tag_remove("search_hit", "1.0", "end")
+            txt.tag_remove("search_current", "1.0", "end")
+
+        def _collect_search_matches(query):
+            _clear_search_tags()
+            search_matches.clear()
+            search_pos["index"] = -1
+            search_pos["query"] = query
+
+            q = (query or "").strip()
+            if not q:
+                search_status.configure(text="")
+                return
+
+            start = "1.0"
+            while True:
+                found = txt.search(q, start, stopindex="end", nocase=True)
+                if not found:
+                    break
+                end_idx = f"{found}+{len(q)}c"
+                search_matches.append((found, end_idx))
+                txt.tag_add("search_hit", found, end_idx)
+                start = end_idx
+
+            if search_matches:
+                search_status.configure(text=f"{len(search_matches)} found")
+            else:
+                search_status.configure(text="No matches")
+
+        def _show_search_match(index):
+            if not search_matches:
+                return
+            index %= len(search_matches)
+            search_pos["index"] = index
+            txt.tag_remove("search_current", "1.0", "end")
+            start_idx, end_idx = search_matches[index]
+            txt.tag_add("search_current", start_idx, end_idx)
+            txt.see(start_idx)
+            search_status.configure(text=f"{index + 1}/{len(search_matches)}")
+
+        def _ensure_search_matches():
+            q = (search_var.get() or "").strip()
+            if q != search_pos["query"]:
+                _collect_search_matches(q)
+            return bool(search_matches)
+
+        def search_next(_event=None):
+            if not _ensure_search_matches():
+                return "break"
+            _show_search_match(search_pos["index"] + 1)
+            return "break"
+
+        def search_previous(_event=None):
+            if not _ensure_search_matches():
+                return "break"
+            if search_pos["index"] < 0:
+                _show_search_match(len(search_matches) - 1)
+            else:
+                _show_search_match(search_pos["index"] - 1)
+            return "break"
+
+        def _search_changed(*_):
+            _collect_search_matches(search_var.get())
+
+        search_var.trace_add("write", _search_changed)
+        search_next_btn.configure(command=search_next)
+        search_prev_btn.configure(command=search_previous)
+        search_entry.bind("<Return>", search_next)
+        search_entry.bind("<Shift-Return>", search_previous)
+        win.bind("<Control-f>", lambda _e: (search_entry.focus_set(), search_entry.selection_range(0, "end")))
+
+        # ------------------------------------------------------------------
+        # Help-page switching
+        # ------------------------------------------------------------------
+        def _switch_help_page(_event=None):
+            choice = page_var.get()
+            current = title_to_page.get(title)
+            if choice == current:
+                return
+
+            dispatch = {
+                "Quick Start": self.open_quick_start,
+                "User Guide": self.open_user_guide,
+                "Theory & Methods": self.open_theory_info,
+                "Music Playground": self.open_music_playground,
+                "Troubleshooting": self.open_troubleshooting,
+                "About MUSIKALL": self.open_about_musikall,
+            }
+            callback = dispatch.get(choice)
+            if callback is None:
+                return
+            win.destroy()
+            callback()
+
+        page_cb.bind("<<ComboboxSelected>>", _switch_help_page)
+
+        txt.configure(state="disabled")
+
+        # ------------------------------------------------------------------
+        # Footer
+        # ------------------------------------------------------------------
+        footer = tk.Frame(outer, bg=P["bg"])
+        footer.pack(fill="x", padx=18, pady=(0, 14))
+        tk.Label(
+            footer,
+            text="Ctrl+F searches • Enter/Shift+Enter moves through matches • Drag the divider to resize Contents • Esc closes",
+            font=("Segoe UI", 9),
+            bg=P["bg"],
+            fg=P["subtext"],
+        ).pack(side="left")
+
+        if action_label and action_command:
+            ttk.Button(
+                footer,
+                text=action_label,
+                command=action_command,
+                style="Accent.TButton",
+            ).pack(side="right")
+        else:
+            ttk.Button(footer, text="Close", command=win.destroy).pack(side="right")
+
+        win.bind("<Escape>", lambda _e: win.destroy())
+        win.focus_set()
+        return win
+
+    def open_quick_start(self):
+        text = "\n# MUSIKALL — Quick Start\n\nUse this guide to complete a standard analysis from structures to network paths, visualization, and sonification.\n\n## 1. Create a job\n- Enter a **Job Name** and click **Create Job**.\n- MUSIKALL creates a dedicated job directory under `Documents/MUSIKALL Projects`.\n\n## 2. Upload structures\n- Click **Upload PDBs** and select one or more `.pdb` files.\n- Hydrogen atoms are removed from the copied PDB files before network construction.\n- For direct structural comparison, keep related conformers or conditions in the same job.\n\n## 3. Build the residue interaction network\n- Set the **Cutoff Value (Å)**.\n- Click **Calculate Adjacency Matrix**.\n- MUSIKALL builds a residue-level contact network and stores the adjacency and edge-cost matrices for each structure.\n\n## 4. Define the reference and endpoints\n- Select a **Reference PDB** when comparing multiple structures.\n- Enter **Source residues** and **Sink residues**.\n- Basic input: `CHAIN,RESNUM` or `CHAIN,START-END`.\n- SEGNAME-aware input: `SEGNAME:CHAIN,RESNUM` or `SEGNAME:CHAIN,START-END`.\n- Separate multiple selections with semicolons or new lines.\n\n## 5. Map residues or skip mapping\n- Leave **Skip alignment** unchecked when source/sink residues must be projected from the selected reference to other structures.\n- Use **Skip alignment** only when residue identifiers are already directly compatible across the structures being compared.\n\n## 6. Calculate K-shortest paths\n- Set **K** and click **Calculate Shortest Paths**.\n- MUSIKALL ranks simple source-to-sink paths by cumulative network edge cost.\n\n## 7. Explore and compare paths\nAfter KSP calculation, use:\n- **Path Explorer** to inspect individual routes and costs.\n- **Cooccurrence Backbone** to examine residues that repeatedly occur together across selected paths.\n- **Path Similarity** to compare path composition within a structure or across an ensemble.\n- **Property Tracks** to relate path-frequency scores to residue properties.\n\n## 8. Visualize\n- **Save PDBs** writes frequency information into structure files for external visualization.\n- **Show 3D Structures** opens the built-in 3D viewer.\n\n## 9. Generate audio\n- Configure mapping, harmony, instrument, rhythm, pitch range, and velocity in the music panel.\n- Click **Generate Audio** to create MIDI output under the job's music directory.\n\n## Reproducibility checklist\nFor a direct comparison, keep the following fixed unless the change is intentional:\n- input structure files,\n- cutoff value,\n- reference/mapping mode,\n- source and sink selections,\n- K value,\n- MUSIKALL software version.\n"
+        self._open_help_document(
+            "MUSIKALL — Quick Start",
+            "A concise end-to-end workflow from structure upload to path analysis, visualization, and sonification.",
+            text,
+            geometry="980x720",
+        )
+
+
 
     def open_user_guide(self):
-        win = tk.Toplevel(self)
-        win.title("📘 MUSIKALL – User Guide (Detailed)")
-        win.geometry("950x700")
+        text = '\n# MUSIKALL — User Guide\n\nMUSIKALL provides a workflow for constructing residue interaction networks from biomolecular structures, calculating weighted K-shortest paths between selected residues, analyzing path ensembles, visualizing residue usage, and generating deterministic MIDI representations.\n\n## 1. Jobs and output organization\nA job is a self-contained analysis workspace. Input copies, matrices, path tables, plots, colored structures, diagnostics, and music outputs are written inside the job directory. Use separate or versioned jobs when changing core analysis parameters.\n\n## 2. Structure input and residue identity\n### PDB handling\nThe current upload workflow reads PDB files and removes hydrogen atoms from the copied inputs before contact analysis. Residue nodes are built from standard polymer `ATOM` records. In the PDB format, these records are not limited to proteins: standard amino-acid, RNA, and DNA residues are represented as polymer `ATOM` records. MUSIKALL therefore supports protein structures, nucleic-acid structures, and hybrid assemblies such as ribosomes. In the current implementation, `HETATM` records are not used to create RIN residue nodes.\n\n### Residue identity\nMUSIKALL preserves the identifiers needed to distinguish residues in ordinary proteins and large assemblies:\n- chain ID,\n- residue number,\n- optional insertion code,\n- optional SEGNAME.\n\nWhen SEGNAME is present, residue tokens can be represented as `SEGNAME:CHAIN:RESNUM`; otherwise `CHAIN:RESNUM` is used. This distinction is important when chain IDs and residue numbers are reused in large complexes.\n\n## 3. Residue interaction network construction\nEach residue is a graph node. Two residues are connected when at least one heavy-atom pair lies within the user-defined cutoff.\n\nFor residues i and j:\n- `Ni` = number of heavy atoms in residue i,\n- `Nj` = number of heavy atoms in residue j,\n- `Nij` = number of inter-residue heavy-atom pairs within the cutoff.\n\nThe implemented normalized contact strength is:\n\n    Aij = Nij / sqrt(Ni * Nj)\n\nFor every non-zero contact, the path-search edge cost is:\n\n    wij = 1 / (Aij + 1e-6)\n\nTherefore, stronger normalized contacts have lower graph cost and are favored by weighted shortest-path searches. The saved matrix files contain the adjacency values and corresponding edge costs.\n\n## 4. Reference structure, source/sink selection, and mapping\nSource and sink selections are defined with respect to the selected reference structure when mapping is used.\n\nAccepted input examples:\n- `A,150`\n- `A,150-153`\n- `A,150,155,160`\n- `PROT:A,150`\n- multiple selections separated by `;` or new lines.\n\n### Mapping mode\nWhen mapping is enabled, MUSIKALL first resolves the selected residues in the reference structure and then projects those endpoints to the other structures using the implemented residue-correspondence logic. Large systems receive SEGNAME-aware handling to reduce ambiguity.\n\n### Skip alignment\nUse **Skip alignment** only when the selected residue identifiers can be resolved directly and consistently in every structure. It is not a general replacement for residue correspondence when numbering differs.\n\n## 5. K-shortest paths\nMUSIKALL constructs an undirected weighted graph from non-zero adjacency entries and uses NetworkX `shortest_simple_paths` to obtain up to K simple paths between each source/sink pair.\n\nA path is ranked by cumulative edge cost:\n\n    Cost(P) = sum(wij) for all edges (i,j) in P\n\nHere, "shortest" means lowest cumulative **network cost**, not shortest geometric distance in angstroms.\n\n## 6. Path Explorer\nPath Explorer lists calculated paths, residue tokens, and path costs. It can filter by source/sink pair and by residue search text. Use it to inspect individual routes before interpreting aggregate statistics.\n\n## 7. Residue frequencies and exported path tables\nMUSIKALL counts residue usage across the calculated path ensemble and generates normalized frequency values used by downstream plots, structure coloring, and optional frequency-dependent MIDI velocity. Source and sink handling is kept separate from interior-node frequency summaries where implemented.\n\n## 8. Cooccurrence Backbone\nEach selected path is converted to a binary residue-use vector `xp`. Stacking these vectors gives matrix `M`, and the co-occurrence matrix is:\n\n    C = M^T M\n\n`C[i,j]` records how often residues i and j occur together in the selected path ensemble. For visualization, the implementation restricts the heatmap to residues that actually appear in the selected paths. Per-structure and ensemble modes are available, with percent/count outputs and diagnostics according to the selected options.\n\n## 9. Path Similarity\nPath Similarity compares binary residue-membership patterns between paths. The implementation supports per-structure and ensemble analyses and uses a user-set similarity threshold. Use this module to identify recurrent or compositionally similar routes; it is distinct from comparing path costs.\n\n## 10. Property Tracks\nProperty Tracks relate path-frequency scores to residue classifications. The current GUI supports:\n- hydrophobicity,\n- charge,\n- aromaticity,\n- polarity.\n\nA minimum FreqScore can be applied before plotting. Results can be exported to `property_tracks_all.xlsx`, visualized per structure, and combined across structures using the selected reference when available.\n\n## 11. Visualization\n### Saved structures\nMUSIKALL can write normalized residue-frequency information into the B-factor field of output PDB files for visualization. These values are analysis annotations; they should not be interpreted as experimental crystallographic B-factors.\n\n### Built-in 3D viewer\nThe built-in viewer displays structures together with graph nodes/edges, source/sink residues, and frequency information when available.\n\n## 12. Sonification\nSonification is a representation layer applied after structural/path analysis. It does not change the residue network or KSP calculations.\n\nThe current music module supports:\n- output grouping: `per_path`, `per_pair`, `per_pdb`,\n- mapping modes: amino-acid grid, property, or single-residue focus,\n- single-note or triad playback,\n- General MIDI instrument selection,\n- tempo, note/rest duration, transpose, and pitch clamping,\n- constant or frequency-dependent velocity.\n\nWhen velocity is frequency-dependent, normalized frequency values are mapped between the configured minimum and maximum MIDI velocities.\n\n## 13. Reproducibility and good practice\nFor direct comparisons between structures:\n- use the same cutoff,\n- use the same K,\n- document the same source/sink definition and reference structure,\n- keep mapping mode consistent,\n- preserve the exact structure files used,\n- record the MUSIKALL version/build.\n\n## 14. Common warnings\n- **No paths found:** source and sink may lie in disconnected graph components at the selected cutoff.\n- **Residue not found:** verify chain, residue number, insertion code, and SEGNAME where applicable.\n- **Empty path analyses:** confirm KSP results exist for the selected structure/pair.\n- **Unexpected cross-structure endpoints:** verify the selected reference and mapping mode.\n- **Viewer or MIDI issues:** use the dedicated Troubleshooting page under Help.\n'
+        self._open_help_document(
+            "MUSIKALL — User Guide",
+            "Operational reference for inputs, residue identity, network construction, mapping, analyses, outputs, and reproducibility.",
+            text,
+            geometry="1080x780",
+        )
 
-        notebook = ttk.Notebook(win)
-        notebook.pack(fill="both", expand=True)
 
-        text = """
-        # 📘 MUSIKALL — User Guide (Detailed)
-
-        MUSIKALL analyzes long-range communication in biomolecular structures by combining:
-        - **Residue Interaction Networks (RINs)** from 3D heavy-atom contacts,
-        - **weighted edge costs** derived from contact statistics,
-        - **K-Shortest Paths (KSP)** ensembles (multiple alternative communication routes),
-        - optional **Co-occurrence / Backbone** analysis (residue co-usage across paths),
-        - visualization outputs (e.g., **B-factor frequency coloring**),
-        - and **sonification** (MIDI generation) of residues and paths.
-
-        This guide is written to match MUSIKALL’s implemented behavior and file outputs.
-
-        ---
-
-        ## 1) Jobs and folder structure
-
-        A **Job** is a self-contained workspace:
-        - You create/select a job to define the output root directory.
-        - MUSIKALL writes matrices, paths, plots, colored PDBs, and MIDI outputs inside the job folder.
-
-        Typical layout (conceptual):
-        - `<job_dir>/pdb_files/` (input copies)
-        - `<job_dir>/<PDBID>/` (per-structure analysis outputs, e.g., matrices)
-        - `<job_dir>/colored_pdbs/` (B-factor colored structures)
-        - `<job_dir>/music/` (MIDI outputs; exact substructure depends on settings)
-        - `<job_dir>/cooccurrence/` or a chosen output directory (backbone heatmaps; depends on your GUI path)
-
-        (Exact folder names depend on your GUI configuration, but the workflow is job-scoped.)
-
-        ---
-
-        ## 2) Input structures (PDB handling)
-
-        ### 2.1 What MUSIKALL reads
-        From each PDB, MUSIKALL extracts:
-        - Chains and residues (residue name + residue ID/number),
-        - Heavy atoms and their coordinates (used for contact counting),
-        - Optional identifiers where present/needed:
-          - **SEGNAME**
-          - **Insertion code (icode)**
-
-        ### 2.2 Why SEGNAME / icode can matter
-        Some structures (large assemblies, ribosome-like systems, unusual chain IDs) require residue identity beyond just `chain + resnum`.
-        MUSIKALL utilities used by residue mapping, backbone/co-occurrence, and music token parsing are designed to be tolerant of:
-        - `SEG:CHAIN:RESNUM`
-        - `CHAIN:RESNUM:ICODE`
-        - `SEG:CHAIN:RESNUM:ICODE`
-
-        ---
-
-        ## 3) Build the RIN (Adjacency & Edge Weights)
-
-        This step constructs the graph used in all path-based analyses.
-
-        ### 3.1 Nodes
-        Each residue is a **node**. MUSIKALL maintains a stable mapping:
-        - node index `0..R-1` ↔ residue identity (chain/resnum + optional segname/icode)
-
-        ### 3.2 Edges (contact rule)
-        Two residues *i* and *j* are connected based on **heavy-atom contacts** within a cutoff distance `rcutt`:
-        - MUSIKALL counts **Nᵢⱼ = number of heavy atom–atom pairs** (one atom from residue i, one from residue j) whose distance ≤ `rcutt`.
-
-        ### 3.3 Adjacency strength (implemented definition)
-        Let:
-        - **Nᵢ** = number of heavy atoms in residue i  
-        - **Nⱼ** = number of heavy atoms in residue j  
-        - **Nᵢⱼ** = number of heavy-atom pairs within `rcutt`  
-
-        MUSIKALL defines the adjacency strength as:
-
-            aᵢⱼ = √( (Nᵢ · Nⱼ) / Nᵢⱼ )
-
-        Important interpretation (because of the reciprocal form):
-        - **More contacts (larger Nᵢⱼ)** → **smaller aᵢⱼ**
-        - **Fewer contacts** → **larger aᵢⱼ**
-
-        So in MUSIKALL, *aᵢⱼ* behaves like an “inverse contact density” measure.
-
-        ### 3.4 Edge weight used for path search
-        MUSIKALL converts adjacency strength into an **edge weight** (used as the path “cost”):
-
-            edgeweightᵢⱼ = 1 / (aᵢⱼ + 1e−6)
-
-        Because aᵢⱼ decreases when contacts increase:
-        - **More contacts** → **smaller aᵢⱼ** → **larger edgeweightᵢⱼ**
-        - **Fewer contacts** → **larger aᵢⱼ** → **smaller edgeweightᵢⱼ**
-
-        Practical consequence:
-        - The KSP step operates on the numeric edgeweight matrix as implemented. Keep cutoff consistent across structures in a job for fair comparisons.
-
-        ### 3.5 Output files (per PDB)
-        For each structure, MUSIKALL writes:
-        - `<PDBID>_adj_matrix.txt`  (aᵢⱼ values)
-        - `<PDBID>_edgeweight_matrix.txt`  (edgeweightᵢⱼ values used for KSP)
-
-        ---
-
-        ## 4) Residue Mapping (optional; recommended for multi-PDB jobs)
-
-        Residue mapping aligns residue identifiers across multiple structures to a **common reference** so that:
-        - “Source/Sink residue selections” refer to the same physical residues across conformers.
-
-        Key characteristics of MUSIKALL’s mapping approach:
-        - It is **reference-based index/number matching** (not sequence alignment).
-        - It is designed to be robust for cases where chain IDs alone can be misleading (e.g., assemblies where segname encodes biological identity).
-
-        If you trust that residue numbering is already consistent across all PDBs:
-        - You may enable **Skip Residue Mapping** (MUSIKALL uses chain:number selections directly per structure).
-
-        ---
-
-        ## 5) Selecting Sources and Sinks (residue specification)
-
-        You specify residues as **chain + residue number**, with ranges and multiple chains.
-
-        Examples:
-        - `A,150-153`
-        - `B,200`
-        - `A,312-320;B,45-60`
-
-        Rules:
-        - Use `;` to separate chain blocks.
-        - Use `-` for ranges.
-        - Make sure residues exist in the relevant structure and chain.
-
-        Advanced token forms (may appear in logs/exports depending on your build):
-        - `SEG:CHAIN:RESNUM`
-        - `CHAIN:RESNUM:ICODE`
-        - `SEG:CHAIN:RESNUM:ICODE`
-
-        ---
-
-        ## 6) K-Shortest Paths (KSP)
-
-        ### 6.1 What MUSIKALL computes
-        For each source → sink pair:
-        1. MUSIKALL builds a weighted graph from the structure’s **edgeweight matrix**.
-        2. It computes **K shortest simple paths** (no repeated nodes) using a NetworkX k-shortest routine.
-        3. It stores the path ensemble per pair and summarizes residue usage.
-
-        ### 6.2 Why K > 1 matters
-        Protein communication is often **redundant**. Using K paths captures:
-        - alternative corridors,
-        - route diversity,
-        - and robustness beyond a single shortest path.
-
-        ### 6.3 Residue frequency (usage)
-        MUSIKALL tracks how often residues appear across paths (and can aggregate by scope):
-        - within a single path,
-        - across all paths of a pair,
-        - across all selected paths in a structure.
-
-        These frequencies drive:
-        - visualization hotspots (B-factor coloring),
-        - and music dynamics (when velocity is set to by-frequency).
-
-        ---
-
-        ## 7) Co-occurrence Backbone (residue co-usage heatmaps)
-
-        If enabled in your build, MUSIKALL provides a **co-occurrence backbone** analysis.
-
-        ### 7.1 Definition (implemented)
-        Each path is converted into an N-length binary vector:
-        - `x_p[k] = 1` if residue k appears in path p, else `0`.
-
-        Let `M` be the matrix whose rows are the path vectors (`K × N`).
-        The co-occurrence matrix is:
-
-            C = Σ_p (x_p x_pᵀ) = MᵀM
-
-        So:
-        - `C[i, j]` = number of paths in which residues i and j appear together.
-
-        ### 7.2 “Used-only” plotting behavior
-        For clarity, MUSIKALL plots only residues that actually appear in the selected path set:
-        - It computes `used_idx` from the union of residues seen in the selected paths.
-        - Heatmaps are generated from `C_used = C[used_idx, used_idx]`.
-
-        ### 7.3 Output files (names used by MUSIKALL)
-        Backbone plots are written as PNGs (per structure), for example:
-        - `BACKBONE__PERCENT__<pdb_base>__K<K>__m<m>.png`
-        Optional (if enabled):
-        - `BACKBONE__COUNT__...png`
-        - `BACKBONE__BINARY__...png`
-        Diagnostics (if enabled) can also be written to help debug mapping/token issues.
-
-        ---
-
-        ## 8) Visualization outputs
-
-        ### 8.1 Save Colored PDBs (B-factor encoding)
-        MUSIKALL can write normalized residue frequency values into the PDB **B-factor** column.
-        - Open output PDBs in PyMOL/Chimera/Mol* and color by B-factor to see hotspots.
-
-        ### 8.2 Built-in 3D viewer
-        Use the internal viewer for quick inspection and comparisons across structures.
-
-        ---
-
-        ## 9) Music module (MIDI generation)
-
-        MUSIKALL converts residues and/or paths into MIDI sequences.
-
-        ### 9.1 Key options (MusicOptions in MUSIKALL)
-        - `rep_res_freq`: output grouping mode (`per_path` | `per_pair` | `per_pdb`)
-        - `mapping_mode`: `aa` | `property` | `single`
-        - `chord_mode`: `single` | `triad`
-        - `program`: MIDI instrument program number (General MIDI)
-        - `tempo_bpm`, `note_beats`, `rest_beats`
-        - `transpose`, `clamp_low`, `clamp_high`
-        - `velocity_mode`: `constant` | `by_frequency`
-          - `velocity_constant`
-          - `velocity_min`, `velocity_max`
-          - `freq_scope`: `per_path` | `per_pair` | `per_pdb`
-
-        Note:
-        - `align_mode` exists in the options (`aligned` | `legacy`). If your current build does not expose or use it, treat it as reserved for future ordering/alignment behavior.
-
-        ### 9.2 Output organization (`rep_res_freq`)
-        - `per_path`: one MIDI per path (most granular; preserves route order).
-        - `per_pair`: one MIDI per source–sink pair.
-        - `per_pdb`: one MIDI per structure (a “fingerprint” for that conformer/condition).
-
-        ---
-
-        ## 10) Best practices (reproducibility)
-        - Keep `rcutt` (cutoff) constant across structures in the same job.
-        - Keep K constant when comparing conditions.
-        - If you change core parameters, create a new job or versioned job name.
-        - For large assemblies, be consistent about segname/icode handling and residue mapping.
-
-        ---
-
-        ## 11) Troubleshooting (common issues)
-
-        - **No paths found**
-          - Source and sink may be disconnected under the chosen cutoff/weights.
-          - Verify residues exist; try adjusting `rcutt`.
-
-        - **Residue not found**
-          - Check chain IDs and residue numbering (and insertion codes if present).
-
-        - **Backbone heatmap empty**
-          - Means no usable residues were collected from the selected paths.
-          - Check diagnostics output for unmapped token examples.
-
-        - **MIDI too high/low or clipped**
-          - Adjust `transpose` and `clamp_low/clamp_high`.
-
-        ---
-
-        ## Glossary
-        - **RIN**: residue-level network from heavy-atom contact statistics
-        - **aᵢⱼ**: adjacency strength term used by MUSIKALL (√(Nᵢ·Nⱼ/Nᵢⱼ))
-        - **edgeweight**: 1/(aᵢⱼ+1e−6), used for path search
-        - **KSP**: K shortest simple paths between source and sink
-        - **Residue frequency**: residue usage across selected paths (by scope)
-        - **Co-occurrence backbone**: residue×residue co-usage matrix C = MᵀM
-        - **rep_res_freq**: MIDI organization mode (per_path / per_pair / per_pdb)
-
-        ✅ MUSIKALL supports a complete pipeline: **structure → network → paths → statistics/plots → sound**.
-        """
-
-        frame = ttk.Frame(notebook)
-        notebook.add(frame, text="User Guide")
-
-        txt = tk.Text(frame, wrap="word", font=("Arial", 12))
-        txt.insert("1.0", text)
-        txt.config(state="disabled", bg="white")
-        txt.pack(fill="both", expand=True, padx=10, pady=10)
-
-        scroll = ttk.Scrollbar(frame, command=txt.yview)
-        txt.configure(yscrollcommand=scroll.set)
-        scroll.pack(side="right", fill="y")
 
     def open_theory_info(self):
-        win = tk.Toplevel(self)
-        win.title("ℹ MUSIKALL – Theory & Info")
-        win.geometry("900x650")
+        text = '# Structural Network and K-Shortest-Path Method\n\n## Residue interaction network\nMUSIKALL represents each polymer residue as a node in an undirected graph. Nodes can correspond to amino-acid residues or standard RNA/DNA nucleotides, allowing proteins, nucleic acids, and hybrid assemblies to be analyzed within the same residue-level network. Structural contacts are derived from heavy atoms within the user-defined cutoff distance.\n\nFor residues i and j:\n\n    Ni  = heavy-atom count of residue i\n    Nj  = heavy-atom count of residue j\n    Nij = number of i-j heavy-atom pairs within the cutoff\n\nThe implemented normalized contact strength is:\n\n    Aij = Nij / sqrt(Ni * Nj)\n\nThis normalization reduces the direct dependence of contact magnitude on residue size. If `Nij = 0`, no graph edge is created.\n\n## Edge cost\nWeighted path searches require lower cost for stronger contacts. MUSIKALL therefore uses:\n\n    wij = 1 / (Aij + epsilon)\n\nwith `epsilon = 1e-6` for numerical stability.\n\nThus:\n- larger normalized contact strength -> lower edge cost,\n- lower normalized contact strength -> higher edge cost.\n\n## Path cost and K-shortest paths\nFor a path P composed of graph edges:\n\n    Cost(P) = sum(wij)\n\nMUSIKALL uses NetworkX `shortest_simple_paths` to rank simple source-to-sink paths by this cumulative network cost. A simple path does not repeat nodes.\n\nThe resulting routes are best interpreted as low-cost candidate communication routes encoded by the selected structural contact network. They are network-derived hypotheses rather than direct measurements of dynamical signal transmission.\n\n## Residue usage and co-occurrence\nFor a set of K paths, residue usage summarizes how often individual nodes participate in the selected path ensemble.\n\nFor co-occurrence analysis, each path is represented by a binary vector `xp` indicating whether each residue is present. With path vectors stacked in matrix `M`:\n\n    C = M^T M\n\n`C[i,j]` is the number of selected paths in which residues i and j co-occur. Individual residue frequency is a first-order usage statistic; co-occurrence is a pairwise usage statistic.\n\n## Path similarity\nPath Similarity compares path-level binary residue-membership patterns. This measures compositional overlap between routes and is conceptually different from comparing their cumulative network costs.\n\n## Residue correspondence across structures\nCross-structure analyses require a consistent correspondence between biological residues. MUSIKALL uses chain/residue identifiers and, where required, insertion codes, SEGNAME information, and implemented sequence-aware projection logic. SEGNAME-aware handling is especially important in large assemblies where chain and residue numbering alone may be ambiguous.\n\n---\n\n# Sonification Method\n\nMUSIKALL sonification converts already calculated molecular/path information into deterministic MIDI events. Musical settings do not feed back into network construction or path calculation.\n\n## Residue identity to pitch\nIn amino-acid-grid mode, each residue type is assigned a root note and octave. A note name is converted to a MIDI pitch using the standard MIDI pitch-number convention.\n\n## Harmony\nWhen chord mode is `single`, only the root pitch is emitted. When chord mode is `triad`, the selected preset adds fixed semitone intervals to the root pitch.\n\n## Pitch shaping\nA global transpose can be applied. Resulting pitches are clamped to the selected lower and upper octave bounds to avoid values outside the desired register.\n\n## Temporal mapping\nTempo determines seconds per beat. `note_beats` determines event duration and `rest_beats` controls silence between successive events.\n\nIn `per_path` output, path order can be preserved as musical time. `per_pair` and `per_pdb` modes aggregate residues at broader analysis scopes according to the implemented ordering policy.\n\n## Dynamics\nTwo velocity modes are available:\n\n- `constant`: a fixed MIDI velocity is used.\n- `by_frequency`: normalized residue frequency `F` in [0,1] is mapped between configured velocity bounds:\n\n    velocity = vmin + F * (vmax - vmin)\n\nThe result is clamped to the MIDI velocity range.\n\n## Representation policies\n- `per_path`: one MIDI representation per calculated path.\n- `per_pair`: one representation per source-sink pair.\n- `per_pdb`: one representation per structure.\n\n## Interpretation\nSonification provides an additional representation of residue identity, ordering, path membership, and frequency. Musical pitch, harmony, rhythm, or loudness should not be interpreted as independent biochemical measurements unless explicitly defined by the selected mapping.'
+        self._open_help_document(
+            "MUSIKALL — Theory & Methods",
+            "Scientific and mathematical basis of the structural-network, path-analysis, and deterministic sonification layers.",
+            text,
+            geometry="1040x760",
+        )
 
-        notebook = ttk.Notebook(win)
-        notebook.pack(fill="both", expand=True)
-
-        theories = {
-
-            "RIN & KSP": """
-        🧩 Residue Interaction Networks (RIN) & K-Shortest Paths (KSP)
-
-        MUSIKALL models long-range communication in biomolecular structures using
-        a graph-theoretical framework. The theory implemented here follows
-        standard network analysis principles applied to structure-derived contact maps.
-
-        ---
-
-        🔹 1) Residue Interaction Network (RIN)
-
-        A Residue Interaction Network represents a biomolecular structure as a graph:
-
-        • Nodes:
-          Each residue (amino acid or nucleotide) is represented as one node.
-          Node identity is defined by:
-            - chain ID
-            - residue number
-            - optional insertion code (icode)
-            - optional segment name (segname), if required
-
-        This ensures robust residue identification in large assemblies.
-
-        • Edges:
-          Two residues i and j are considered connected if at least one pair
-          of heavy atoms (non-hydrogen atoms) lies within a user-defined cutoff distance r_cut.
-
-        This creates an undirected contact graph G = (V, E).
-
-        ---
-
-        🔹 2) Contact quantification and adjacency strength
-
-        Instead of using a purely binary contact (0/1), MUSIKALL quantifies
-        how strongly two residues interact based on heavy-atom contact counts.
-
-        For residues i and j:
-
-            Nᵢ   = number of heavy atoms in residue i
-            Nⱼ   = number of heavy atoms in residue j
-            Nᵢⱼ  = number of heavy atom–atom pairs (one in i, one in j)
-                    with distance ≤ r_cut
-
-        MUSIKALL defines adjacency strength:
-
-            Aᵢⱼ = Nᵢⱼ / √(Nᵢ · Nⱼ)
-
-        This is a normalized contact density:
-
-        • Larger Nᵢⱼ → larger Aᵢⱼ
-        • Normalization by √(Nᵢ·Nⱼ) reduces bias from residue size
-
-        Thus Aᵢⱼ represents size-corrected contact intensity.
-
-        If Nᵢⱼ = 0, no edge is created.
-
-        ---
-
-        🔹 3) Edge cost used for path search
-
-        Path algorithms require a cost function where lower values represent
-        “more favorable” communication.
-
-        MUSIKALL converts adjacency strength to cost as:
-
-            costᵢⱼ = 1 / (Aᵢⱼ + ε)
-
-        where ε is a small constant for numerical stability.
-
-        Consequences:
-
-        • Strong contact (large Aᵢⱼ) → small cost
-        • Weak contact (small Aᵢⱼ) → large cost
-
-        The weighted graph G(V, E, cost) is then used for path search.
-
-        ---
-
-        🔹 4) K-Shortest Simple Paths (KSP)
-
-        Given:
-        • a weighted graph
-        • one or more source residues
-        • one or more sink residues
-
-        MUSIKALL computes the K shortest simple paths
-        (simple = no repeated nodes) between source–sink pairs.
-
-        Implementation:
-        • Uses NetworkX k-shortest simple path functionality
-          (Yen-style algorithmic behavior)
-        • Returns paths ordered by total path cost (ascending)
-
-        Why K > 1 is important:
-
-        Protein communication is rarely limited to a single route.
-        Alternative pathways often coexist.
-
-        Using K paths captures:
-        • redundancy
-        • alternative corridors
-        • distributed signaling patterns
-
-        ---
-
-        🔹 5) Residue frequency (node usage)
-
-        After computing a path ensemble, MUSIKALL can compute
-        residue usage frequency.
-
-        For residue r:
-
-            F_r = (number of selected paths containing r) / (normalization factor)
-
-        Normalization depends on scope:
-        • per_path
-        • per_pair
-        • per_pdb
-
-        Residues with high F_r behave as communication hubs
-        within the chosen analysis scope.
-
-        ---
-
-        🔹 6) Co-occurrence backbone (pairwise residue coupling)
-
-        To analyze how residues are used together across paths,
-        MUSIKALL constructs a co-occurrence matrix.
-
-        For each path p:
-        • define binary vector x_p ∈ {0,1}^N
-          where x_p[k] = 1 if residue k is in path p
-
-        Let M be the matrix whose rows are x_p.
-
-        The co-occurrence matrix is:
-
-            C = MᵀM
-
-        Thus:
-
-            C[i, j] = number of paths where residues i and j co-appear
-
-        MUSIKALL typically visualizes:
-
-        • COUNT heatmap
-        • PERCENT heatmap (scaled to max = 100)
-        • optional BINARY heatmap (C > 0)
-
-        Plots are usually generated on the “used-only” residue subset
-        for interpretability.
-        
-        Interpretation:
-
-        • Node frequency captures marginal residue importance.
-        • Co-occurrence captures joint usage patterns between residues.
-
-        In probabilistic terms:
-        - Frequency ≈ first-order marginal usage
-        - Co-occurrence ≈ second-order joint distribution within the path ensemble
-
-        Thus, the backbone matrix reveals coordinated residue groups
-        that tend to function together across alternative communication routes.
-
-        
-
-        ---
-
-        Summary
-
-        • RIN defines structural connectivity.
-        • Weighted costs define communication resistance.
-        • KSP extracts multiple low-cost routes.
-        • Frequency and co-occurrence summarize dominant residues
-          and residue pairs within the ensemble.
-
-        This framework provides a network-based representation
-        of structure-encoded communication.
-        """,
-
-            "Musical Mapping": """
-        🎶 Musical Mapping Theory in MUSIKALL
-
-        MUSIKALL implements a deterministic sonification framework
-        that maps molecular tokens (residues) into MIDI events.
-
-        The mapping is systematic and reproducible.
-
-        ---
-
-        🔹 1) Tokens → Musical Events
-
-        A token corresponds to a residue identifier, such as:
-
-        • CHAIN:RESNUM
-        • SEG:CHAIN:RESNUM
-        • CHAIN:RESNUM:ICODE
-        • SEG:CHAIN:RESNUM:ICODE
-
-        Each token becomes:
-
-        • a single note   (chord_mode = "single")
-        • or a triad      (chord_mode = "triad")
-
-        ---
-
-        🔹 2) Identity → Pitch (Residue Grid)
-
-        Each residue type maps to a root pitch defined in the editable Residue Grid:
-
-            residue_type → (note_name, octave)
-
-        Pitch is converted to MIDI note number:
-
-            MIDI = 12 × (octave + 1) + pitch_class(note_name)
-
-        where pitch_class ∈ {0..11} for C, C#, ..., B.
-
-        This ensures:
-        • reproducible identity-to-pitch mapping
-        • user control via grid editing
-
-        ---
-
-        🔹 3) Triad construction (optional harmony)
-
-        If chord_mode = "triad", additional notes are added
-        using an interval set Δ (in semitones).
-
-        Common interval sets:
-
-        • Major       {0,4,7}
-        • Minor       {0,3,7}
-        • Diminished  {0,3,6}
-        • Augmented   {0,4,8}
-        • Sus2        {0,2,7}
-        • Sus4        {0,5,7}
-
-        If root pitch = p:
-
-            chord = { p + δ | δ ∈ Δ }
-
-        All notes in the chord are emitted simultaneously.
-
-        If chord_mode = "single", only p is emitted.
-
-        ---
-
-        🔹 4) Pitch shaping (transpose and clamping)
-
-        For each generated pitch q:
-
-        • Apply transpose τ:
-              q' = q + τ
-
-        • Clamp to allowed octave window:
-              lower = 12 × (O_low + 1)
-              upper = 12 × (O_high + 1) + 11
-              q'' = min(max(q', lower), upper)
-
-        This prevents extreme registers.
-
-        Clamping applies to every pitch in a triad.
-
-        ---
-
-        🔹 5) Temporal structure (rhythm)
-
-        Timing parameters:
-
-        • tempo_bpm = T
-        • note_beats = b_note
-        • rest_beats = b_rest
-
-        Seconds per beat:
-
-            sec_per_beat = 60 / T
-
-        Event duration:
-
-            duration_seconds = b_note × sec_per_beat
-
-        After each event:
-        • optional silence of b_rest beats
-
-        Ordering rules:
-
-        • per_path mode → residues follow path order
-        • per_pair / per_pdb → residues are sorted deterministically
-          (by seg, chain, resid, icode) before emission
-
-        ---
-
-        🔹 6) Dynamics (velocity)
-
-        Velocity ∈ [1,127].
-
-        Two modes:
-
-        (A) constant
-            v = fixed value (optionally with small humanization)
-
-        (B) by_frequency
-            v_r = v_min + (v_max − v_min) × F_r
-
-        where F_r ∈ [0,1] is normalized residue frequency
-        under the selected scope.
-
-        Thus:
-        • more frequently used residues → louder output
-        • rarely used residues → softer output
-
-        ---
-
-        🔹 7) Representation policy (rep_res_freq)
-
-        Defines how residues are grouped into MIDI files:
-
-        • per_path
-            One file per path.
-            Preserves route topology in time.
-
-        • per_pair
-            One file per source–sink pair.
-            Uses unique residue set across that pair’s paths,
-            sorted deterministically.
-
-        • per_pdb
-            One file per structure.
-            Uses unique residue set across selected paths,
-            sorted deterministically.
-
-        This defines musical form at the file level.
-
-        ---
-
-        Summary
-
-        MUSIKALL sonification pipeline:
-
-        • residue identity → pitch
-        • optional chord intervals → harmony
-        • path or sorted order → temporal structure
-        • residue frequency → dynamics
-        • representation policy → musical form
-
-        The mapping is deterministic, reproducible,
-        and controlled by explicit user parameters.
-        """
-        }
-
-        for title, text in theories.items():
-            frame = ttk.Frame(notebook)
-            notebook.add(frame, text=title)
-
-            txt = tk.Text(frame, wrap="word", font=("Arial", 12))
-            txt.insert("1.0", text)
-            txt.config(state="disabled", bg="white")
-            txt.pack(fill="both", expand=True, padx=10, pady=10)
-
-            scroll = ttk.Scrollbar(frame, command=txt.yview)
-            txt.configure(yscrollcommand=scroll.set)
-            scroll.pack(side="right", fill="y")
 
     def open_music_playground(self):
-        import os, re, tempfile, tkinter as tk
+        """Interactive preview workspace that mirrors the current music-generation rules."""
+        import os
+        import re
+        import tempfile
+        import tkinter as tk
+        from collections import Counter
         from tkinter import ttk, messagebox
-        try:
-            from midiutil import MIDIFile
 
-            from MUSIKALL_functions1 import (
-                ALL_RESIDUES, NOTE_NAMES, get_triad_presets,
-                note_to_midi, apply_transpose_clamp
+        try:
+                        from MUSIKALL_functions1 import (
+                ALL_RESIDUES,
+                NOTE_NAMES,
+                GROUPS,
+                aa3_to_group,
+                get_triad_presets,
+                note_to_midi,
+                midi_to_note,
+                triad_from_root,
+                apply_transpose_clamp,
+                _property_root,
+                _pick_velocity,
+                flex_parse_residue_token,
             )
         except Exception as e:
-            messagebox.showerror("Missing deps", f"Imports failed:\n{e}")
+            messagebox.showerror("Music Playground", f"Required music components could not be loaded:\n{e}")
             return
 
+        # One-window rule: bring an existing playground to the front.
+        old = getattr(self, "_music_playground_win", None)
+        try:
+            if old is not None and old.winfo_exists():
+                old.deiconify()
+                old.lift()
+                old.focus_force()
+                return
+        except Exception:
+            pass
 
-        P = getattr(self, "current_palette", {"bg": "white", "fg": "black", "accent": "#06c"})
+        if not hasattr(self, "music_opts"):
+            self.init_music_options()
+
+        P = getattr(self, "current_palette", {}) or {}
+        bg = P.get("bg", "#F7FAFC")
+        surface = P.get("surface", "#FFFFFF")
+        muted = P.get("muted", "#E0F2FE")
+        text_c = P.get("text", "#1E293B")
+        subtext = P.get("subtext", "#475569")
+        accent = P.get("accent", "#0EA5E9")
+        border = P.get("border", "#BAE6FD")
+
         win = tk.Toplevel(self)
-        win.title("🎧 Music Playground — listen to any option")
-        win.geometry("1100x780")
-        win.configure(bg=P["bg"])
-        s = ttk.Style(win)
-        for k in ("TFrame", "TLabel", "Card.TFrame", "Card.TLabel", "CardHeader.TLabel", "Card.TLabelframe"):
-            s.configure(k, background=P["bg"], foreground=P.get("fg", "#000"))
-        s.configure("CardHeader.TLabel", font=("Segoe UI", 11, "bold"))
+        self._music_playground_win = win
+        win.title("Music Playground")
+        win.geometry("1160x800")
+        win.minsize(940, 650)
+        win.configure(bg=bg)
 
+        style = ttk.Style(win)
+        style.configure("MP.TFrame", background=bg)
+        style.configure("MP.Surface.TFrame", background=surface)
+        style.configure("MP.TLabel", background=bg, foreground=text_c)
+        style.configure("MP.Surface.TLabel", background=surface, foreground=text_c)
+        style.configure("MP.Sub.TLabel", background=surface, foreground=subtext)
+        style.configure("MP.Header.TLabel", background=surface, foreground=text_c,
+                        font=("Segoe UI", 17, "bold"))
+        style.configure("MP.Section.TLabel", background=surface, foreground=text_c,
+                        font=("Segoe UI", 11, "bold"))
+        style.configure("MP.Card.TLabelframe", background=surface, bordercolor=border)
+        style.configure("MP.Card.TLabelframe.Label", background=surface, foreground=text_c,
+                        font=("Segoe UI", 10, "bold"))
 
-        def _beats_from_label(lbl: str) -> float:
-            return {"Whole (1/1)": 4.0, "Half (1/2)": 2.0, "Quarter (1/4)": 1.0, "Eighth (1/8)": 0.5,
-                    "Sixteenth (1/16)": 0.25}.get(lbl, 1.0)
-
-        def _opt_bpm():
-            return int(
-                getattr(self, "_tempo_var", None).get() if hasattr(self, "_tempo_var") else getattr(self.music_opts,
-                                                                                                    "tempo_bpm", 120))
-
-        def _opt_program():
-            return int(
-                getattr(self, "_program_var", None).get() if hasattr(self, "_program_var") else getattr(self.music_opts,
-                                                                                                        "program", 0))
-
-        def _opt_note_beats():
-            return _beats_from_label(self._note_value.get()) if hasattr(self, "_note_value") else float(
-                getattr(self.music_opts, "note_beats", 1.0))
-
-        def _opt_rest_beats():
-            if hasattr(self, "_rest_ratio"):
+        # ---------- Current UI option readers ----------
+        def _get(var_name, fallback):
+            obj = getattr(self, var_name, None)
+            if obj is not None:
                 try:
-                    return max(0.0, _opt_note_beats() * float(self._rest_ratio.get()))
-                except:
+                    return obj.get()
+                except Exception:
                     pass
-            return float(getattr(self.music_opts, "rest_beats", 0.25))
+            return fallback
 
-        def _opt_transpose():
-            return int(
-                getattr(self, "_transpose", None).get() if hasattr(self, "_transpose") else getattr(self.music_opts,
-                                                                                                    "transpose", 0))
+        def _beats_from_label(lbl):
+            return {
+                "Whole (1/1)": 4.0,
+                "Half (1/2)": 2.0,
+                "Quarter (1/4)": 1.0,
+                "Eighth (1/8)": 0.5,
+                "Sixteenth (1/16)": 0.25,
+            }.get(str(lbl), 1.0)
 
-        def _opt_clamp_lo():
-            return int(
-                getattr(self, "_clamp_lo", None).get() if hasattr(self, "_clamp_lo") else getattr(self.music_opts,
-                                                                                                  "clamp_low", 3))
+        def _snapshot_options():
+            """Copy the currently visible music controls into a lightweight MusicOptions-like object."""
+            from copy import copy
+            opts = copy(self.music_opts)
+            opts.rep_res_freq = str(_get("_rep_res_freq", getattr(opts, "rep_res_freq", "per_pdb")) or "per_pdb")
+            opts.mapping_mode = str(_get("_mapping_mode", getattr(opts, "mapping_mode", "aa")) or "aa")
+            opts.chord_mode = str(_get("_chord_mode", getattr(opts, "chord_mode", "single")) or "single")
+            opts.aa_triad_name = str(_get("_aa_triad", getattr(opts, "aa_triad_name", "Major (I)")) or "Major (I)")
+            opts.property_dimension = str(_get("_prop_dimension", getattr(opts, "property_dimension", "hydrophobicity")) or "hydrophobicity")
+            opts.property_base_octave = int(_get("_prop_octave", getattr(opts, "property_base_octave", 4)) or 4)
+            opts.single_aa_code = str(_get("_single_code", getattr(opts, "single_aa_code", "K")) or "K").strip().upper()[:1]
+            opts.single_triad_name = str(_get("_single_triad", getattr(opts, "single_triad_name", "Major (I)")) or "Major (I)")
+            opts.single_base_octave = int(_get("_single_octave", getattr(opts, "single_base_octave", 4)) or 4)
+            opts.single_others_policy = str(_get("_single_others", getattr(opts, "single_others_policy", "rest")) or "rest")
+            opts.program = int(_get("_program_var", getattr(opts, "program", 0)) or 0)
+            opts.velocity_mode = str(_get("_vel_mode", getattr(opts, "velocity_mode", "by_frequency")) or "by_frequency")
+            opts.velocity_constant = int(_get("_vel_const", getattr(opts, "velocity_constant", 90)) or 90)
+            opts.velocity_min = int(_get("_velocity_min", getattr(opts, "velocity_min", 30)) or 30)
+            opts.velocity_max = int(_get("_velocity_max", getattr(opts, "velocity_max", 110)) or 110)
+            opts.transpose = int(_get("_transpose", getattr(opts, "transpose", 0)) or 0)
+            opts.clamp_low = int(_get("_clamp_lo", getattr(opts, "clamp_low", 3)) or 3)
+            opts.clamp_high = int(_get("_clamp_hi", getattr(opts, "clamp_high", 6)) or 6)
+            opts.tempo_bpm = int(_get("_tempo_var", getattr(opts, "tempo_bpm", 120)) or 120)
+            opts.note_beats = _beats_from_label(_get("_note_value", "Quarter (1/4)"))
+            rr = float(_get("_rest_ratio", 0.25) or 0.0)
+            opts.rest_beats = max(0.0, opts.note_beats * rr)
 
-        def _opt_clamp_hi():
-            return int(
-                getattr(self, "_clamp_hi", None).get() if hasattr(self, "_clamp_hi") else getattr(self.music_opts,
-                                                                                                  "clamp_high", 6))
-
-        def _opt_chord_mode():
-            return (
-                getattr(self, "_chord_mode", None).get() if hasattr(self, "_chord_mode") else getattr(self.music_opts,
-                                                                                                      "chord_mode",
-                                                                                                      "single")).lower()
-
-        def _opt_triad():
-            return (getattr(self, "_aa_triad", None).get() if hasattr(self, "_aa_triad") else getattr(self.music_opts,
-                                                                                                      "aa_triad_name",
-                                                                                                      "Major (I)"))
-
-        def _opt_prop_dim():
-            return (getattr(self, "_prop_dimension", None).get() if hasattr(self, "_prop_dimension") else getattr(
-                self.music_opts, "property_dimension", "hydrophobicity"))
-
-        def _opt_prop_oct():
-            return int(
-                getattr(self, "_prop_octave", None).get() if hasattr(self, "_prop_octave") else getattr(self.music_opts,
-                                                                                                        "property_base_octave",
-                                                                                                        4))
-
-        def _opt_single():  # (one-letter, triad, base_oct, policy)
-            aa= (getattr(self, "_single_code", None).get().strip().upper()[:1] if hasattr(self,
-                                                                                           "_single_code") else getattr(
-                self.music_opts, "single_aa_code", "K"))
-            tri = (getattr(self, "_single_triad", None).get() if hasattr(self, "_single_triad") else getattr(
-                self.music_opts, "single_triad_name", "Major (I)"))
-            octv = int(getattr(self, "_single_octave", None).get() if hasattr(self, "_single_octave") else getattr(
-                self.music_opts, "single_base_octave", 4))
-            pol = (getattr(self, "_single_others", None).get() if hasattr(self, "_single_others") else getattr(
-                self.music_opts, "single_others_policy", "rest"))
-            return aa, tri, octv, pol
+            # Use live property-triad controls when Advanced Options is currently open.
+            tri_map = dict(getattr(opts, "property_triads", {}) or {})
+            dim = opts.property_dimension
+            live_vars = getattr(self, "_prop_triad_vars", {}) or {}
+            if live_vars:
+                tri_map[dim] = {
+                    cls: (var.get() if hasattr(var, "get") else str(var))
+                    for cls, var in live_vars.items()
+                }
+            opts.property_triads = tri_map
+            return opts
 
         TRIADS = get_triad_presets()
-
-        def _apply_range(m):
-            return apply_transpose_clamp(m, _opt_transpose(), _opt_clamp_lo(), _opt_clamp_hi())
-
-        def _write_and_play(midi_notes, name="play", velocity=95):
-            mid = MIDIFile(1)
-            tr = 0
-
-            mid.addTempo(tr, 0, int(_opt_bpm()))
-            mid.addProgramChange(tr, 0, 0, int(_opt_program()))
-
-            t = 0.0
-            dur = float(_opt_note_beats())
-
-            try:
-                v = int(float(velocity))
-            except:
-                v = 90
-
-            v = max(1, min(127, v))
-
-            for m in midi_notes:
-                try:
-                    m_int = int(m)
-                except:
-                    continue
-
-                mid.addNote(tr, 0, m_int, float(t), float(dur), v)
-                t += dur + float(_opt_rest_beats())
-
-            tmp = os.path.join(tempfile.gettempdir(), f"{name}.mid")
-
-            with open(tmp, "wb") as fh:
-                mid.writeFile(fh)
-
-            play_midi(tmp)
-
-        # ---- Header
-        top = ttk.Frame(win, style="Card.TFrame") 
-        top.pack(fill="x", padx=10, pady=(10, 6))
-        ttk.Label(top,
-                  text="Pick anything below and press ▶ to hear. Uses your Advanced settings (tempo, program, range, etc.).",
-                  style="CardHeader.TLabel").pack(side="left")
-        ttk.Button(top, text="⏹ Stop", command=stop_midi).pack(side="right")
-
-        # ---- Notebook
-        nb = ttk.Notebook(win) 
-        nb.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-
-        # =========================================================
-
-        tab1 = ttk.Frame(nb, style="Card.TFrame")
-        nb.add(tab1, text="Residue Grid")
-        ttk.Label(tab1,
-                  text="Plays the current residue →root mapping from the main grid. Triad/single depends on Advanced → Chord mode.",
-                  style="Card.TLabel").pack(anchor="w", padx=6, pady=6)
-
-        aa_box = ttk.Labelframe(tab1, text="Amino acids", padding=(6, 6), style="Card.TLabelframe")
-        aa_box.pack(fill="both", expand=True, padx=6, pady=6)
-
-        canvas = tk.Canvas(aa_box, bg=P["bg"], highlightthickness=0)
-        inner = ttk.Frame(canvas, style="Card.TFrame")
-        vs = ttk.Scrollbar(aa_box, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=vs.set)
-        vs.pack(side="right", fill="y") 
-        canvas.pack(side="left", fill="both", expand=True)
-        canvas.create_window((0, 0), window=inner, anchor="nw")
-        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        aa_by_one = {one: (aa3, fullname) for aa3, one, fullname in ALL_RESIDUES}
+        aa_name = {aa3: (one, fullname) for aa3, one, fullname in ALL_RESIDUES}
 
         def _grid_root(aa3):
             wset = (getattr(self, "aa_widgets", {}) or {}).get(aa3)
-            if not wset: return None
-            n = (wset["note"].get() or "C").strip()
+            if not wset:
+                return None
             try:
-                o = int((wset["oct"].get() or "4").strip())
-            except:
-                o = 4
-            return f"{n}{o}"
+                note = (wset["note"].get() or "C").strip()
+                octave = int((wset["oct"].get() or "4").strip())
+                return f"{note}{octave}"
+            except Exception:
+                return None
 
-        def _notes_from_root_str(root_str):
-            rm = note_to_midi(root_str)
-            if _opt_chord_mode() == "triad":
-                return [_apply_range(rm + iv) for iv in TRIADS.get(_opt_triad(), [0])]
-            return [_apply_range(rm)]
+        def _midi_notes(note_names, opts):
+            out = []
+            for n in note_names:
+                if n == "REST":
+                    continue
+                try:
+                    m = note_to_midi(n)
+                    out.append(apply_transpose_clamp(m, opts.transpose, opts.clamp_low, opts.clamp_high))
+                except Exception:
+                    continue
+            return out
 
-        for aa3, aa1, fullname in ALL_RESIDUES:
-            row = ttk.Frame(inner, style="Card.TFrame") 
-            row.pack(fill="x", pady=2)
-            ttk.Label(row, text=f"{aa3} ({aa1}) – {fullname}", style="Card.TLabel").pack(side="left", padx=6)
+        def _notes_for_aa3(aa3, opts):
+            """Mirror generate_audio.notes_for_token, but operate on a known residue name."""
+            mode = (opts.mapping_mode or "aa").lower()
 
-            def _mkplay(a=aa3):
-                def _inner():
-                    r = _grid_root(a)
-                    if not r: return
-                    _write_and_play(_notes_from_root_str(r), f"AA_{a}")
+            if mode == "aa":
+                root = _grid_root(aa3)
+                if not root:
+                    return [], None, "No grid root"
+                if (opts.chord_mode or "single").lower() == "single":
+                    return [root], None, "AA identity"
+                return triad_from_root(root, opts.aa_triad_name), None, "AA identity"
 
-                return _inner
+            if mode == "property":
+                dim = opts.property_dimension
+                group = aa3_to_group(aa3, dim)
+                if not group:
+                    return [], None, "No property class"
+                root = _property_root(dim, group, opts.property_base_octave)
+                tri_name = ((opts.property_triads or {}).get(dim, {}) or {}).get(group) or "Major (I)"
+                return triad_from_root(root, tri_name), group, f"{dim}: {group}"
 
-            ttk.Button(row, text="▶ Play", command=_mkplay()).pack(side="right", padx=4)
+            if mode == "single":
+                one = aa_name.get(aa3, (None, None))[0]
+                if one == opts.single_aa_code:
+                    root = f"C{opts.single_base_octave}"
+                    return triad_from_root(root, opts.single_triad_name), None, "Target residue"
+                if (opts.single_others_policy or "rest").lower() == "rest":
+                    return ["REST"], None, "Rest"
+                return [], None, "Skipped"
 
-        # =========================================================
+            return [], None, "Unknown mapping mode"
 
-        tab2 = ttk.Frame(nb, style="Card.TFrame") 
-        nb.add(tab2, text="Triads")
-        ctl = ttk.Frame(tab2, style="Card.TFrame") 
-        ctl.pack(fill="x", padx=6, pady=(6, 0))
-        ttk.Label(ctl, text="Root", style="Card.TLabel").pack(side="left")
-        _t2_root = tk.StringVar(value="C")
-        ttk.Combobox(ctl, textvariable=_t2_root, values=NOTE_NAMES, width=5, state="readonly").pack(side="left", padx=4)
-        ttk.Label(ctl, text="Oct", style="Card.TLabel").pack(side="left")
-        _t2_oct = tk.IntVar(value=_opt_prop_oct())
-        tk.Spinbox(ctl, from_=0, to=9, width=4, textvariable=_t2_oct, bg=P["bg"], fg=P.get("fg", "#000"),
-                   insertbackground=P.get("fg", "#000")).pack(side="left", padx=4)
+        def _resolve_aa3(token, pdb_key):
+            """Resolve a path token to the residue name using current residue metadata."""
+            try:
+                seg, ch, rn, ic = flex_parse_residue_token(token, strict=False, default_seg="")
+                ch = str(ch or "").strip()
+                rn = int(rn)
+                seg = str(seg or "").strip()
+                ic = str(ic).strip() if ic not in (None, "", " ") else None
+            except Exception:
+                return None
 
-        tri_box = ttk.Labelframe(tab2, text="Triad presets", padding=(6, 6), style="Card.TLabelframe")
-        tri_box.pack(fill="both", expand=True, padx=6, pady=6)
+            pdb_data = (getattr(self, "pdb_info_dict", {}) or {}).get(pdb_key, {}) or {}
+            if not pdb_data:
+                stem = os.path.splitext(os.path.basename(str(pdb_key)))[0].lower()
+                pdb_data = (getattr(self, "pdb_info_dict", {}) or {}).get(stem, {}) or {}
 
-        for nm, ivs in TRIADS.items():
-            row = ttk.Frame(tri_box, style="Card.TFrame") 
-            row.pack(fill="x", pady=2)
-            ttk.Label(row, text=nm, style="Card.TLabel").pack(side="left", padx=6)
+            candidates = []
+            for ch_key, residues in (pdb_data.get("residue_chain_map", {}) or {}).items():
+                for r in residues or []:
+                    rch = str(r.get("chain") or ch_key).strip()
+                    try:
+                        rrn = int(r.get("residue_num"))
+                    except Exception:
+                        continue
+                    ric = r.get("icode")
+                    ric = str(ric).strip() if ric not in (None, "", " ") else None
+                    rseg = str(r.get("segname") or "").strip()
+                    if rch != ch or rrn != rn:
+                        continue
+                    if ic is not None and ric != ic:
+                        continue
+                    if seg and rseg != seg:
+                        continue
+                    candidates.append(str(r.get("residue_name", "UNK")).strip().upper())
+            uniq = [x for x in dict.fromkeys(candidates) if x and x != "UNK"]
+            return uniq[0] if len(uniq) == 1 else (uniq[0] if seg and uniq else None)
 
-            def _mkplay(name=nm, _ivs=list(ivs)):
-                def _inner():
-                    root_str = f"{_t2_root.get()}{int(_t2_oct.get() or 4)}"
-                    rm = note_to_midi(root_str)
-                    notes = [_apply_range(rm + iv) for iv in _ivs]
-                    _write_and_play(notes, f"TRI_{name}")
+        def _canonical(token):
+            try:
+                seg, ch, rn, ic = flex_parse_residue_token(token, strict=False, default_seg="")
+                if not ch or rn is None:
+                    return None
+                base = f"{str(ch).strip().upper()}:{int(rn)}" + (str(ic).strip() if ic else "")
+                return f"{str(seg).strip()}:{base}" if seg else base
+            except Exception:
+                return None
 
-                return _inner
+        def _sort_token(token):
+            try:
+                seg, ch, rn, ic = flex_parse_residue_token(token, strict=False, default_seg="")
+                return (str(seg or ""), str(ch or ""), int(rn), str(ic or ""))
+            except Exception:
+                return ("", "", 10**9, str(token))
 
-            ttk.Button(row, text="▶ Play", command=_mkplay()).pack(side="right", padx=4)
+        def _unique_sorted(paths):
+            s = set()
+            for p in paths or []:
+                for t in p or []:
+                    ct = _canonical(t)
+                    if ct:
+                        s.add(ct)
+            return sorted(s, key=_sort_token)
 
-        # =========================================================
+        def _freq_map(paths):
+            cnt = Counter()
+            for p in paths or []:
+                for t in p or []:
+                    ct = _canonical(t)
+                    if ct:
+                        cnt[ct] += 1
+            if not cnt:
+                return {}
+            mx = max(cnt.values())
+            return {k: v / mx for k, v in cnt.items()} if mx else {k: 0.0 for k in cnt}
 
-        tab3 = ttk.Frame(nb, style="Card.TFrame") 
-        nb.add(tab3, text="Property")
-        ttk.Label(tab3, text="Pick a biochemical property and class  choose root source  the class’s triad plays.",
-                  style="Card.TLabel").pack(anchor="w", padx=6, pady=6)
+        def _write_and_play(events, name="preview", opts_override=None):
+            """Play preview events using current settings or an explicit preview option snapshot."""
+            opts = opts_override if opts_override is not None else _snapshot_options()
+            try:
+                stop_midi()
+            except Exception:
+                pass
 
-        top3 = ttk.Frame(tab3, style="Card.TFrame") 
-        top3.pack(fill="x", padx=6, pady=6)
-        dims = ["hydrophobicity", "charge", "aromaticity", "polarity"]
+            mid = MIDIFile(1)
+            tr = 0
+            mid.addTempo(tr, 0, max(1, int(opts.tempo_bpm)))
+            mid.addProgramChange(tr, 0, 0, max(0, min(127, int(opts.program))))
+            t = 0.0
+            for midi_notes, velocity in events:
+                if midi_notes:
+                    for m in midi_notes:
+                        mid.addNote(tr, 0, int(m), t, float(opts.note_beats),
+                                    max(1, min(127, int(velocity))))
+                t += float(opts.note_beats) + float(opts.rest_beats)
 
-        classes_by_dim = {
-            "hydrophobicity": ["hydrophobic", "hydrophilic"],
-            "charge": ["positive", "negative", "neutral"],
-            "aromaticity": ["aromatic", "nonaromatic"],
-            "polarity": ["polar", "nonpolar"],
-        }
+            tmp = os.path.join(tempfile.gettempdir(),
+                               f"musikall_{re.sub(r'[^A-Za-z0-9_-]+', '_', name)}.mid")
+            with open(tmp, "wb") as fh:
+                mid.writeFile(fh)
+            play_midi(tmp)
 
-        ttk.Label(top3, text="Dimension", style="Card.TLabel").pack(side="left")
-        _p_dim = tk.StringVar(value=_opt_prop_dim())
-        ttk.Combobox(top3, textvariable=_p_dim, values=dims, width=16, state="readonly").pack(side="left", padx=6)
+        def _single_event_for_aa(aa3, freq=0.5):
+            opts = _snapshot_options()
+            names, _grp, _desc = _notes_for_aa3(aa3, opts)
+            midi = _midi_notes(names, opts)
+            vel = _pick_velocity(opts, freq)
+            return [(midi if midi else None, vel)]
 
-        row1 = ttk.Frame(tab3, style="Card.TFrame")
-        row1.pack(fill="x", padx=6, pady=(0, 6))
-        ttk.Label(row1, text="Class", style="Card.TLabel").pack(side="left")
-        _p_class = tk.StringVar(value="")
-        _class_cb = ttk.Combobox(row1, textvariable=_p_class, values=[], width=18, state="readonly")
-        _class_cb.pack(side="left", padx=6)
+        # ---------- Header ----------
+        header = tk.Frame(win, bg=surface, highlightthickness=1, highlightbackground=border)
+        header.pack(fill="x", padx=14, pady=(14, 8))
+        left_head = tk.Frame(header, bg=surface)
+        left_head.pack(side="left", fill="x", expand=True, padx=16, pady=12)
+        tk.Label(left_head, text="Music Playground", bg=surface, fg=text_c,
+                 font=("Segoe UI", 18, "bold")).pack(anchor="w")
+        tk.Label(left_head,
+                 text="Preview the same mapping, chord, dynamics, pitch-range, rhythm and grouping rules used by Generate Audio.",
+                 bg=surface, fg=subtext, font=("Segoe UI", 10)).pack(anchor="w", pady=(3, 0))
+        head_btns = ttk.Frame(header, style="MP.Surface.TFrame")
+        head_btns.pack(side="right", padx=12, pady=12)
+        ttk.Button(head_btns, text="Stop", command=stop_midi).pack(side="left", padx=4)
 
-        row2 = ttk.Frame(tab3, style="Card.TFrame")
-        row2.pack(fill="x", padx=6, pady=(0, 6))
-        ttk.Label(row2, text="Root source", style="Card.TLabel").pack(side="left")
-        _p_root_mode = tk.StringVar(value="aagrid")  # aagrid / Custom / Fallback
-        ttk.Combobox(row2, textvariable=_p_root_mode, values=["aagrid", "Custom", "Fallback"], width=12,
-                     state="readonly").pack(side="left", padx=6)
-        ttk.Label(row2, text="Note", style="Card.TLabel").pack(side="left", padx=(12, 4))
-        _p_root_note = tk.StringVar(value="C")
-        ttk.Combobox(row2, textvariable=_p_root_note, values=NOTE_NAMES, width=5, state="readonly").pack(side="left")
-        ttk.Label(row2, text="Oct", style="Card.TLabel").pack(side="left", padx=(12, 4))
-        _p_root_oct = tk.IntVar(value=_opt_prop_oct())
-        tk.Spinbox(row2, from_=0, to=9, width=4, textvariable=_p_root_oct, bg=P["bg"], fg=P.get("fg", "#000"),
-                   insertbackground=P.get("fg", "#000")).pack(side="left")
+        # Live settings strip
+        settings_var = tk.StringVar()
+        settings_bar = tk.Label(win, textvariable=settings_var, bg=muted, fg=text_c,
+                                anchor="w", padx=12, pady=7, font=("Segoe UI", 9))
+        settings_bar.pack(fill="x", padx=14, pady=(0, 8))
 
-        def _prop_play():
+        def _refresh_settings_label():
+            o = _snapshot_options()
+            settings_var.set(
+                f"Mode: {o.mapping_mode}   |   Output: {o.rep_res_freq}   |   Program: {o.program}   |   "
+                f"Tempo: {o.tempo_bpm} BPM   |   Note: {o.note_beats:g} beat(s)   |   Rest: {o.rest_beats:g}   |   "
+                f"Velocity: {o.velocity_mode}   |   Transpose: {o.transpose:+d}   |   Clamp: {o.clamp_low}–{o.clamp_high}"
+            )
 
-            tri_map = getattr(self.music_opts, "property_triads", {}) or {}
-            tri = (tri_map.get(_p_dim.get(), {}) or {}).get(_p_class.get(), "Major (I)")
+        _refresh_settings_label()
 
-            if _p_root_mode.get() == "aagrid":
+        nb = ttk.Notebook(win)
+        nb.pack(fill="both", expand=True, padx=14, pady=(0, 14))
 
-                pick = tk.Toplevel(win)
-                pick.title("Pick Residue Root") 
-                pick.configure(bg=P["bg"])
-                lst = ttk.Frame(pick, style="Card.TFrame") 
-                lst.pack(padx=8, pady=8)
-                tk_sel = {"root": None}
+        # ---------- Tab 1: Current mapping ----------
+        tab_current = ttk.Frame(nb, style="MP.TFrame")
+        nb.add(tab_current, text="Current Mapping")
+        current_card = tk.Frame(tab_current, bg=surface, highlightthickness=1, highlightbackground=border)
+        current_card.pack(fill="both", expand=True, padx=8, pady=8)
 
-                def _pick_and_close(root_str):
-                    tk_sel["root"] = root_str 
-                    pick.destroy()
+        current_top = tk.Frame(current_card, bg=surface)
+        current_top.pack(fill="x", padx=12, pady=(12, 6))
+        tk.Label(current_top, text="Residue preview", bg=surface, fg=text_c,
+                 font=("Segoe UI", 12, "bold")).pack(side="left")
+        tk.Label(current_top, text="Frequency preview", bg=surface, fg=subtext).pack(side="left", padx=(24, 6))
+        freq_var = tk.DoubleVar(value=0.5)
+        freq_scale = ttk.Scale(current_top, from_=0.0, to=1.0, variable=freq_var, length=180)
+        freq_scale.pack(side="left")
+        freq_label = tk.Label(current_top, text="0.50", bg=surface, fg=text_c, width=5)
+        freq_label.pack(side="left", padx=(6, 0))
+        freq_var.trace_add("write", lambda *_: freq_label.configure(text=f"{freq_var.get():.2f}"))
+        ttk.Button(current_top, text="Refresh", command=lambda: _rebuild_residue_rows()).pack(side="right")
 
-                for aa3, aa1, fullname in ALL_RESIDUES:
-                    # main grid’den oku
-                    wset = (getattr(self, "aa_widgets", {}) or {}).get(aa3)
-                    rs = f"{(wset['note'].get() or 'C')}{(wset['oct'].get() or '4')}" if wset else "C4"
-                    r = ttk.Frame(lst, style="Card.TFrame") 
-                    r.pack(fill="x", pady=1)
-                    ttk.Label(r, text=f"{aa3} ({aa1}) – {fullname}  | {rs}", style="Card.TLabel").pack(side="left")
-                    ttk.Button(r, text="Use", command=lambda s=rs: _pick_and_close(s)).pack(side="right")
-                pick.wait_window()
-                root_str = tk_sel["root"] or f"C{_opt_prop_oct()}"
-            elif _p_root_mode.get() == "Custom":
-                root_str = f"{_p_root_note.get()}{int(_p_root_oct.get() or 4)}"
-            else:
-                root_str = f"C{_opt_prop_oct()}"
-            rm = note_to_midi(root_str)
-            notes = [_apply_range(rm + iv) for iv in get_triad_presets().get(tri, [0])]
-            _write_and_play(notes, f"PROP_{_p_dim.get()}_{_p_class.get()}")
+        table_wrap = tk.Frame(current_card, bg=surface)
+        table_wrap.pack(fill="both", expand=True, padx=12, pady=(4, 12))
+        columns = ("residue", "mapping", "output", "velocity")
+        tree = ttk.Treeview(table_wrap, columns=columns, show="headings", height=18)
+        tree.heading("residue", text="Residue")
+        tree.heading("mapping", text="Mapping / class")
+        tree.heading("output", text="Audible output")
+        tree.heading("velocity", text="Velocity")
+        tree.column("residue", width=210, anchor="w")
+        tree.column("mapping", width=240, anchor="w")
+        tree.column("output", width=300, anchor="w")
+        tree.column("velocity", width=90, anchor="center")
+        ysb = ttk.Scrollbar(table_wrap, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=ysb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        ysb.pack(side="right", fill="y")
 
-        ttk.Button(tab3, text="▶ Play", command=_prop_play).pack(anchor="w", padx=6, pady=(0, 6))
+        row_aa = {}
 
-        def _refresh_classes(*_):
-            vals = classes_by_dim.get(_p_dim.get(), [])
-            _class_cb.configure(values=vals)
-            if vals: _p_class.set(vals[0])
+        def _rebuild_residue_rows():
+            _refresh_settings_label()
+            tree.delete(*tree.get_children())
+            row_aa.clear()
+            o = _snapshot_options()
+            f = float(freq_var.get())
+            vel = _pick_velocity(o, f)
+            for aa3, aa1, fullname in ALL_RESIDUES:
+                names, grp, desc = _notes_for_aa3(aa3, o)
+                audible = "Rest" if names == ["REST"] else (" + ".join(midi_to_note(m) for m in _midi_notes(names, o)) if names else "Skipped / unavailable")
+                mapping_desc = desc
+                if o.mapping_mode == "aa":
+                    mapping_desc = _grid_root(aa3) or "No grid root"
+                    if o.chord_mode == "triad":
+                        mapping_desc += f" · {o.aa_triad_name}"
+                elif o.mapping_mode == "property" and grp:
+                    mapping_desc = f"{o.property_dimension}: {grp}"
+                elif o.mapping_mode == "single":
+                    mapping_desc = "Target" if aa1 == o.single_aa_code else o.single_others_policy.capitalize()
+                iid = tree.insert("", "end", values=(f"{aa3} ({aa1}) — {fullname}", mapping_desc, audible, vel))
+                row_aa[iid] = aa3
 
-        _p_dim.trace_add("write", _refresh_classes)
-        _refresh_classes()
+        def _play_selected(_event=None):
+            sel = tree.selection()
+            if not sel:
+                return
+            aa3 = row_aa.get(sel[0])
+            if aa3:
+                _write_and_play(_single_event_for_aa(aa3, float(freq_var.get())), f"residue_{aa3}")
 
-        # =========================================================
+        tree.bind("<Double-1>", _play_selected)
+        tree.bind("<Return>", _play_selected)
+        row_buttons = ttk.Frame(current_card, style="MP.Surface.TFrame")
+        row_buttons.pack(fill="x", padx=12, pady=(0, 12))
+        ttk.Button(row_buttons, text="Play selected residue", command=_play_selected).pack(side="left")
+        tk.Label(row_buttons, text="Double-click a row to hear it.", bg=surface, fg=subtext).pack(side="left", padx=10)
+        _rebuild_residue_rows()
 
-        tab4 = ttk.Frame(nb, style="Card.TFrame") 
-        nb.add(tab4, text="Single‑AA")
-        one_codes = [a1 for _, a1, _ in ALL_RESIDUES]
-        ttk.Label(tab4, text="Preview your Single‑aasettings (target aatriad at the chosen base octave).",
-                  style="Card.TLabel").pack(anchor="w", padx=6, pady=6)
+        # ---------- Residue Grid library: all residue-identity sounds ----------
+        tab_grid = ttk.Frame(nb, style="MP.TFrame")
+        nb.add(tab_grid, text="Residue Grid")
+        grid_card = tk.Frame(tab_grid, bg=surface, highlightthickness=1, highlightbackground=border)
+        grid_card.pack(fill="both", expand=True, padx=8, pady=8)
+        tk.Label(grid_card, text="Residue-identity mapping library", bg=surface, fg=text_c,
+                 font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=14, pady=(14, 3))
+        tk.Label(grid_card,
+                 text="Audition every residue/nucleotide using its current residue-grid root. Choose single-note or any supported triad without changing the main music settings.",
+                 bg=surface, fg=subtext, wraplength=980, justify="left").pack(anchor="w", padx=14)
+        grid_ctl = tk.Frame(grid_card, bg=surface)
+        grid_ctl.pack(fill="x", padx=14, pady=10)
+        grid_mode = tk.StringVar(value="single")
+        grid_triad = tk.StringVar(value="Major (I)")
+        tk.Label(grid_ctl, text="Playback", bg=surface, fg=text_c).pack(side="left")
+        ttk.Combobox(grid_ctl, textvariable=grid_mode, values=["single", "triad"], state="readonly", width=9).pack(side="left", padx=(6, 14))
+        tk.Label(grid_ctl, text="Triad", bg=surface, fg=text_c).pack(side="left")
+        ttk.Combobox(grid_ctl, textvariable=grid_triad, values=list(TRIADS.keys()), state="readonly", width=22).pack(side="left", padx=6)
+        grid_body = tk.Frame(grid_card, bg=surface)
+        grid_body.pack(fill="both", expand=True, padx=14, pady=(0, 14))
+        grid_tree = ttk.Treeview(grid_body, columns=("residue","root","audible"), show="headings", height=16)
+        for key, title, width in [("residue","Residue",260),("root","Current root",120),("audible","Audible output",360)]:
+            grid_tree.heading(key, text=title); grid_tree.column(key, width=width, anchor="w")
+        grid_sb = ttk.Scrollbar(grid_body, orient="vertical", command=grid_tree.yview)
+        grid_tree.configure(yscrollcommand=grid_sb.set)
+        grid_tree.pack(side="left", fill="both", expand=True); grid_sb.pack(side="right", fill="y")
+        grid_row_aa = {}
 
-        row = ttk.Frame(tab4, style="Card.TFrame") 
-        row.pack(fill="x", padx=6, pady=6)
-        ttk.Label(row, text="Target AA", style="Card.TLabel").pack(side="left")
-        _s_aa, _s_tr, _s_octv, _ = _opt_single()
-        _s_aa_var = tk.StringVar(value=_s_aa)
-        ttk.Combobox(row, textvariable=_s_aa_var, values=one_codes, width=4, state="readonly").pack(side="left", padx=6)
+        def _refresh_grid_library(*_):
+            grid_tree.delete(*grid_tree.get_children()); grid_row_aa.clear()
+            o = _snapshot_options()
+            for aa3, aa1, fullname in ALL_RESIDUES:
+                root = _grid_root(aa3)
+                if root:
+                    names = [root] if grid_mode.get() == "single" else triad_from_root(root, grid_triad.get())
+                    audible = " + ".join(midi_to_note(m) for m in _midi_notes(names, o))
+                else:
+                    audible = "Unavailable"
+                iid = grid_tree.insert("", "end", values=(f"{aa3} ({aa1}) — {fullname}", root or "—", audible))
+                grid_row_aa[iid] = aa3
 
-        ttk.Label(row, text="Triad", style="Card.TLabel").pack(side="left", padx=(12, 4))
-        _s_triad = tk.StringVar(value=_s_tr) 
-        ttk.Combobox(row, textvariable=_s_triad, values=list(TRIADS.keys()), width=18, state="readonly").pack(
-            side="left")
+        def _play_grid_selected(_event=None):
+            sel=grid_tree.selection()
+            if not sel: return
+            aa3=grid_row_aa.get(sel[0]); root=_grid_root(aa3) if aa3 else None
+            if not root: return
+            o=_snapshot_options(); names=[root] if grid_mode.get()=="single" else triad_from_root(root, grid_triad.get())
+            _write_and_play([(_midi_notes(names,o), _pick_velocity(o,0.5))], f"grid_{aa3}")
 
-        ttk.Label(row, text="Base Oct", style="Card.TLabel").pack(side="left", padx=(12, 4))
-        _s_oct = tk.IntVar(value=_s_octv) 
-        tk.Spinbox(row, from_=0, to=9, width=4, textvariable=_s_oct, bg=P["bg"], fg=P.get("fg", "#000"),
-                   insertbackground=P.get("fg", "#000")).pack(side="left")
+        grid_mode.trace_add("write", _refresh_grid_library); grid_triad.trace_add("write", _refresh_grid_library)
+        grid_tree.bind("<Double-1>", _play_grid_selected)
+        ttk.Button(grid_card, text="Play selected residue", command=_play_grid_selected).pack(anchor="w", padx=14, pady=(0,12))
+        _refresh_grid_library()
 
-        def _s_play():
-            rm = note_to_midi(f"C{int(_s_oct.get() or 4)}")
-            notes = [_apply_range(rm + iv) for iv in TRIADS.get(_s_triad.get(), [0])]
-            _write_and_play(notes, f"SINGLE_{_s_aa_var.get()}")
+        # ---------- Property library: every dimension and class ----------
+        tab_prop_music = ttk.Frame(nb, style="MP.TFrame")
+        nb.add(tab_prop_music, text="Properties")
+        prop_card = tk.Frame(tab_prop_music, bg=surface, highlightthickness=1, highlightbackground=border)
+        prop_card.pack(fill="both", expand=True, padx=8, pady=8)
+        tk.Label(prop_card, text="Property-mapping library", bg=surface, fg=text_c,
+                 font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=14, pady=(14,3))
+        tk.Label(prop_card,
+                 text="Hear every class used by hydrophobicity, charge, aromaticity and polarity mapping. Roots are generated by the same property-root function used by Generate Audio.",
+                 bg=surface, fg=subtext, wraplength=980, justify="left").pack(anchor="w", padx=14)
+        prop_ctl = tk.Frame(prop_card, bg=surface); prop_ctl.pack(fill="x", padx=14, pady=10)
+        prop_oct_lib = tk.IntVar(value=int(getattr(self.music_opts,"property_base_octave",4)))
+        prop_triad_lib = tk.StringVar(value="Major (I)")
+        tk.Label(prop_ctl,text="Base octave",bg=surface,fg=text_c).pack(side="left")
+        ttk.Spinbox(prop_ctl,from_=0,to=9,textvariable=prop_oct_lib,width=5).pack(side="left",padx=(6,14))
+        tk.Label(prop_ctl,text="Audition triad",bg=surface,fg=text_c).pack(side="left")
+        ttk.Combobox(prop_ctl,textvariable=prop_triad_lib,values=list(TRIADS.keys()),state="readonly",width=22).pack(side="left",padx=6)
+        prop_body=tk.Frame(prop_card,bg=surface); prop_body.pack(fill="both",expand=True,padx=14,pady=(0,10))
+        prop_tree=ttk.Treeview(prop_body,columns=("dim","class","root","audible"),show="headings",height=14)
+        for key,title,width in [("dim","Property",170),("class","Class",170),("root","Root",100),("audible","Audible output",340)]:
+            prop_tree.heading(key,text=title); prop_tree.column(key,width=width,anchor="w")
+        psb=ttk.Scrollbar(prop_body,orient="vertical",command=prop_tree.yview); prop_tree.configure(yscrollcommand=psb.set)
+        prop_tree.pack(side="left",fill="both",expand=True); psb.pack(side="right",fill="y")
+        prop_rows={}
+        def _refresh_property_library(*_):
+            prop_tree.delete(*prop_tree.get_children()); prop_rows.clear(); o=_snapshot_options()
+            for dim, classes in GROUPS.items():
+                for grp in classes.keys():
+                    root=_property_root(dim,grp,int(prop_oct_lib.get()))
+                    names=triad_from_root(root,prop_triad_lib.get()); audible=" + ".join(midi_to_note(m) for m in _midi_notes(names,o))
+                    iid=prop_tree.insert("","end",values=(dim,grp,root,audible)); prop_rows[iid]=(dim,grp)
+        def _play_property_selected(_event=None):
+            sel=prop_tree.selection()
+            if not sel:return
+            dim,grp=prop_rows[sel[0]]; o=_snapshot_options(); root=_property_root(dim,grp,int(prop_oct_lib.get()))
+            names=triad_from_root(root,prop_triad_lib.get()); _write_and_play([(_midi_notes(names,o),_pick_velocity(o,0.5))],f"property_{dim}_{grp}")
+        def _play_all_property_classes():
+            o=_snapshot_options(); events=[]
+            for dim,classes in GROUPS.items():
+                for grp in classes.keys():
+                    root=_property_root(dim,grp,int(prop_oct_lib.get())); events.append((_midi_notes(triad_from_root(root,prop_triad_lib.get()),o),_pick_velocity(o,0.5)))
+            _write_and_play(events,"all_property_classes")
+        prop_oct_lib.trace_add("write",_refresh_property_library); prop_triad_lib.trace_add("write",_refresh_property_library)
+        prop_tree.bind("<Double-1>",_play_property_selected)
+        pb=ttk.Frame(prop_card,style="MP.Surface.TFrame"); pb.pack(fill="x",padx=14,pady=(0,12))
+        ttk.Button(pb,text="Play selected class",command=_play_property_selected).pack(side="left")
+        ttk.Button(pb,text="Play all property classes",command=_play_all_property_classes).pack(side="left",padx=6)
+        _refresh_property_library()
 
-        ttk.Button(tab4, text="▶ Play", command=_s_play).pack(anchor="w", padx=6, pady=(0, 6))
+        # ---------- Single-residue focus library ----------
+        tab_single = ttk.Frame(nb, style="MP.TFrame")
+        nb.add(tab_single, text="Single Residue")
+        single_card=tk.Frame(tab_single,bg=surface,highlightthickness=1,highlightbackground=border)
+        single_card.pack(fill="both",expand=True,padx=8,pady=8)
+        tk.Label(single_card,text="Single-residue focus",bg=surface,fg=text_c,font=("Segoe UI",12,"bold")).pack(anchor="w",padx=14,pady=(14,3))
+        tk.Label(single_card,text="Choose any supported residue code and hear exactly how the target is rendered. Non-target residues can be previewed as rest or skip, matching the backend policy.",bg=surface,fg=subtext,wraplength=980,justify="left").pack(anchor="w",padx=14)
+        sc=tk.Frame(single_card,bg=surface); sc.pack(fill="x",padx=14,pady=14)
+        single_choices=[f"{one} — {aa3} — {fullname}" for aa3,one,fullname in ALL_RESIDUES]
+        single_sel=tk.StringVar(value=single_choices[0]); single_triad_lib=tk.StringVar(value="Major (I)"); single_oct_lib=tk.IntVar(value=4); single_policy_lib=tk.StringVar(value="rest")
+        for label,var,values,width in [("Residue",single_sel,single_choices,30),("Triad",single_triad_lib,list(TRIADS.keys()),22),("Others",single_policy_lib,["rest","skip"],8)]:
+            tk.Label(sc,text=label,bg=surface,fg=text_c).pack(side="left",padx=(0,5)); ttk.Combobox(sc,textvariable=var,values=values,state="readonly",width=width).pack(side="left",padx=(0,12))
+        tk.Label(sc,text="Octave",bg=surface,fg=text_c).pack(side="left"); ttk.Spinbox(sc,from_=0,to=9,textvariable=single_oct_lib,width=5).pack(side="left",padx=6)
+        single_desc=tk.StringVar(); tk.Label(single_card,textvariable=single_desc,bg=muted,fg=text_c,anchor="w",padx=10,pady=8).pack(fill="x",padx=14,pady=(0,12))
+        def _single_preview_notes():
+            one=single_sel.get().split(" — ",1)[0].strip(); o=_snapshot_options(); root=f"C{int(single_oct_lib.get())}"; names=triad_from_root(root,single_triad_lib.get()); audible=" + ".join(midi_to_note(m) for m in _midi_notes(names,o)); single_desc.set(f"Target code: {one}   |   Root: {root}   |   Output: {audible}   |   Non-target policy: {single_policy_lib.get()}"); return o,names,one
+        def _play_single_target():
+            o,names,one=_single_preview_notes(); _write_and_play([(_midi_notes(names,o),_pick_velocity(o,0.5))],f"single_{one}")
+        def _play_single_behavior():
+            o,names,one=_single_preview_notes(); events=[(_midi_notes(names,o),_pick_velocity(o,0.5))]
+            # REST creates a timed silent event; SKIP produces no event for the non-target residue.
+            if single_policy_lib.get()=="rest": events.append((None,_pick_velocity(o,0.5)))
+            _write_and_play(events,f"single_behavior_{one}")
+        for v in (single_sel,single_triad_lib,single_oct_lib,single_policy_lib): v.trace_add("write",lambda *_:_single_preview_notes())
+        sb=ttk.Frame(single_card,style="MP.Surface.TFrame"); sb.pack(fill="x",padx=14,pady=(0,14))
+        ttk.Button(sb,text="Play target",command=_play_single_target).pack(side="left")
+        ttk.Button(sb,text="Play target + non-target behavior",command=_play_single_behavior).pack(side="left",padx=6)
+        _single_preview_notes()
 
-        # =========================================================
+        # ---------- Generated-output preview ----------
+        tab_paths = ttk.Frame(nb, style="MP.TFrame")
+        nb.add(tab_paths, text="Output Preview")
+        path_card = tk.Frame(tab_paths, bg=surface, highlightthickness=1, highlightbackground=border)
+        path_card.pack(fill="both", expand=True, padx=8, pady=8)
+        tk.Label(path_card, text="Preview stored KSP data using the current output-grouping rule",
+                 bg=surface, fg=text_c, font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=14, pady=(14, 3))
+        tk.Label(path_card,
+                 text="per_path preserves path order; per_pair and per_pdb use unique residue tokens sorted deterministically, matching Generate Audio.",
+                 bg=surface, fg=subtext, wraplength=980, justify="left").pack(anchor="w", padx=14)
 
-        tab5 = ttk.Frame(nb, style="Card.TFrame")
-        nb.add(tab5, text="Custom")
-        r1 = ttk.Frame(tab5, style="Card.TFrame")
-        r1.pack(fill="x", padx=6, pady=6)
-        ttk.Label(r1, text="Chord mode", style="Card.TLabel").pack(side="left")
-        _c_mode = tk.StringVar(value=_opt_chord_mode())
-        ttk.Combobox(r1, textvariable=_c_mode, values=["single", "triad"], width=10, state="readonly").pack(side="left",
-                                                                                                            padx=6)
-        ttk.Label(r1, text="Triad", style="Card.TLabel").pack(side="left", padx=(12, 4))
-        _c_triad = tk.StringVar(value=_opt_triad())
-        ttk.Combobox(r1, textvariable=_c_triad, values=list(TRIADS.keys()), width=18, state="readonly").pack(
-            side="left")
+        preview_info = tk.StringVar(value="")
+        tk.Label(path_card, textvariable=preview_info, bg=muted, fg=text_c,
+                 anchor="w", padx=10, pady=7).pack(fill="x", padx=14, pady=(12, 8))
 
-        r2 = ttk.Frame(tab5, style="Card.TFrame")
-        r2.pack(fill="x", padx=6, pady=6)
-        ttk.Label(r2, text="Root", style="Card.TLabel").pack(side="left")
-        _c_root = tk.StringVar(value="C")
-        ttk.Combobox(r2, textvariable=_c_root, values=NOTE_NAMES, width=5, state="readonly").pack(side="left", padx=4)
-        ttk.Label(r2, text="Oct", style="Card.TLabel").pack(side="left")
-        _c_oct = tk.IntVar(value=_opt_prop_oct())
-        tk.Spinbox(r2, from_=0, to=9, width=4, textvariable=_c_oct, bg=P["bg"], fg=P.get("fg", "#000"),
-                   insertbackground=P.get("fg", "#000")).pack(side="left", padx=4)
+        path_text = tk.Text(path_card, height=12, wrap="word", bg=surface, fg=text_c,
+                            relief="flat", highlightthickness=1, highlightbackground=border,
+                            font=("Consolas", 9), padx=10, pady=8)
+        path_text.pack(fill="both", expand=True, padx=14, pady=(0, 10))
 
-        r3 = ttk.Frame(tab5, style="Card.TFrame")
-        r3.pack(fill="x", padx=6, pady=6)
-        ttk.Label(r3, text="Velocity preview (0..1 freq → loudness if by_frequency)", style="Card.TLabel").pack(
-            side="left")
-        _c_freq = tk.DoubleVar(value=0.5)
-        tk.Scale(r3, from_=0.0, to=1.0, orient="horizontal", resolution=0.01, length=200, variable=_c_freq,
-                 bg=P["bg"], highlightthickness=0).pack(side="left", padx=8)
+        def _first_preview_dataset():
+            pd2 = getattr(self, "paths_dict_2", {}) or {}
+            for pdb_key, pairs in pd2.items():
+                if not pairs:
+                    continue
+                o = _snapshot_options()
+                policy = (o.rep_res_freq or "per_pdb").lower()
+                if policy == "per_path":
+                    for pair_key, pdata in pairs.items():
+                        paths = list((pdata or {}).get("paths", []) or [])
+                        if paths:
+                            toks = [_canonical(t) for t in paths[0]]
+                            toks = [t for t in toks if t]
+                            return pdb_key, f"{pair_key} · path 1", toks, _freq_map([paths[0]])
+                if policy == "per_pair":
+                    for pair_key, pdata in pairs.items():
+                        paths = list((pdata or {}).get("paths", []) or [])
+                        if paths:
+                            return pdb_key, pair_key, _unique_sorted(paths), _freq_map(paths)
+                all_paths = []
+                for pdata in pairs.values():
+                    all_paths.extend(list((pdata or {}).get("paths", []) or []))
+                if all_paths:
+                    return pdb_key, "all stored pairs", _unique_sorted(all_paths), _freq_map(all_paths)
+            return None
 
-        def _vel_from_freq(freq):
-            mode = (getattr(self, "_vel_mode", None).get() if hasattr(self, "_vel_mode") else getattr(self.music_opts,
-                                                                                                      "velocity_mode",
-                                                                                                      "constant"))
-            if mode == "by_frequency":
-                return int(30 + max(0.0, min(1.0, freq)) * 90)
-            return int(
-                getattr(self, "_vel_const", None).get() if hasattr(self, "_vel_const") else getattr(self.music_opts,
-                                                                                                    "velocity_constant",
-                                                                                                    90))
+        def _build_path_preview(play=False):
+            _refresh_settings_label()
+            data = _first_preview_dataset()
+            path_text.configure(state="normal")
+            path_text.delete("1.0", "end")
+            if not data:
+                preview_info.set("No stored K-shortest paths are available yet.")
+                path_text.insert("end", "Run K-shortest paths first to preview a real MUSIKALL output sequence.")
+                path_text.configure(state="disabled")
+                return
 
-        def _c_play():
-            root_str = f"{_c_root.get()}{int(_c_oct.get() or 4)}"
-            rm = note_to_midi(root_str)
-            if _c_mode.get() == "triad":
-                notes = [_apply_range(rm + iv) for iv in TRIADS.get(_c_triad.get(), [0])]
-            else:
-                notes = [_apply_range(rm)]
-            _write_and_play(notes, f"CUSTOM_{_c_mode.get()}_{_c_triad.get()}", velocity=_vel_from_freq(_c_freq.get()))
+            pdb_key, label, tokens, fmap = data
+            o = _snapshot_options()
+            events = []
+            display_lines = []
+            for tok in tokens:
+                aa3 = _resolve_aa3(tok, pdb_key)
+                if not aa3:
+                    display_lines.append(f"{tok:<24}  unresolved → silence/rest slot")
+                    events.append((None, _pick_velocity(o, fmap.get(tok, 0.0))))
+                    continue
+                names, grp, desc = _notes_for_aa3(aa3, o)
+                midi = _midi_notes(names, o)
+                vel = _pick_velocity(o, fmap.get(tok, 0.0))
+                note_disp = "REST" if names == ["REST"] else ("+".join(midi_to_note(m) for m in midi) if midi else "SKIP")
+                display_lines.append(f"{tok:<24}  {aa3:<4}  {desc:<24}  {note_disp:<18}  vel={vel}")
+                events.append((midi if midi else None, vel))
 
-        ttk.Button(tab5, text="▶ Play", command=_c_play).pack(anchor="w", padx=6, pady=(0, 6))
+            preview_info.set(f"PDB: {pdb_key}   |   Scope: {o.rep_res_freq}   |   Selection: {label}   |   Events: {len(tokens)}")
+            path_text.insert("end", "\n".join(display_lines))
+            path_text.configure(state="disabled")
+            if play and events:
+                _write_and_play(events, "stored_output_preview")
+
+        path_btns = ttk.Frame(path_card, style="MP.Surface.TFrame")
+        path_btns.pack(fill="x", padx=14, pady=(0, 14))
+        ttk.Button(path_btns, text="Refresh preview", command=lambda: _build_path_preview(False)).pack(side="left")
+        ttk.Button(path_btns, text="Play preview", command=lambda: _build_path_preview(True)).pack(side="left", padx=6)
+        _build_path_preview(False)
+
+        # ---------- Chord library ----------
+        tab_chords = ttk.Frame(nb, style="MP.TFrame")
+        nb.add(tab_chords, text="Chord Library")
+        chord_card = tk.Frame(tab_chords, bg=surface, highlightthickness=1, highlightbackground=border)
+        chord_card.pack(fill="both", expand=True, padx=8, pady=8)
+        controls = tk.Frame(chord_card, bg=surface)
+        controls.pack(fill="x", padx=14, pady=14)
+        tk.Label(controls, text="Root", bg=surface, fg=text_c).pack(side="left")
+        chord_root = tk.StringVar(value="C")
+        ttk.Combobox(controls, textvariable=chord_root, values=NOTE_NAMES, state="readonly", width=6).pack(side="left", padx=(6, 14))
+        tk.Label(controls, text="Octave", bg=surface, fg=text_c).pack(side="left")
+        chord_oct = tk.IntVar(value=4)
+        ttk.Spinbox(controls, from_=0, to=9, textvariable=chord_oct, width=5).pack(side="left", padx=6)
+        tk.Label(controls, text="Transpose and clamp are applied exactly as in Generate Audio.", bg=surface, fg=subtext).pack(side="left", padx=16)
+
+        chord_body = tk.Frame(chord_card, bg=surface)
+        chord_body.pack(fill="both", expand=True, padx=14, pady=(0, 14))
+        for i, (name, intervals) in enumerate(TRIADS.items()):
+            row = tk.Frame(chord_body, bg=surface)
+            row.grid(row=i, column=0, sticky="ew", pady=3)
+            chord_body.grid_columnconfigure(0, weight=1)
+            tk.Label(row, text=name, bg=surface, fg=text_c, width=24, anchor="w").pack(side="left")
+            tk.Label(row, text="Intervals: " + ", ".join(str(x) for x in intervals), bg=surface, fg=subtext, width=24, anchor="w").pack(side="left")
+
+            def _play_chord(nm=name):
+                o = _snapshot_options()
+                root = f"{chord_root.get()}{int(chord_oct.get())}"
+                names = triad_from_root(root, nm)
+                midi = _midi_notes(names, o)
+                _write_and_play([(midi, _pick_velocity(o, 0.5))], f"chord_{nm}")
+
+            ttk.Button(row, text="Play", command=_play_chord).pack(side="right")
+
+        # ---------- Instrument & pitch library ----------
+        tab_inst = ttk.Frame(nb, style="MP.TFrame")
+        nb.add(tab_inst, text="Instrument & Pitch")
+        inst_card=tk.Frame(tab_inst,bg=surface,highlightthickness=1,highlightbackground=border)
+        inst_card.pack(fill="both",expand=True,padx=8,pady=8)
+        tk.Label(inst_card,text="General MIDI instrument and pitch preview",bg=surface,fg=text_c,font=("Segoe UI",12,"bold")).pack(anchor="w",padx=14,pady=(14,3))
+        tk.Label(inst_card,text="MUSIKALL sends a General MIDI program number (0–127). The exact timbre depends on the synthesizer/soundfont installed on the computer.",bg=surface,fg=subtext,wraplength=980,justify="left").pack(anchor="w",padx=14)
+        GM_NAMES = [
+            "Acoustic Grand Piano","Bright Acoustic Piano","Electric Grand Piano","Honky-tonk Piano","Electric Piano 1","Electric Piano 2","Harpsichord","Clavinet",
+            "Celesta","Glockenspiel","Music Box","Vibraphone","Marimba","Xylophone","Tubular Bells","Dulcimer",
+            "Drawbar Organ","Percussive Organ","Rock Organ","Church Organ","Reed Organ","Accordion","Harmonica","Tango Accordion",
+            "Acoustic Guitar (nylon)","Acoustic Guitar (steel)","Electric Guitar (jazz)","Electric Guitar (clean)","Electric Guitar (muted)","Overdriven Guitar","Distortion Guitar","Guitar Harmonics",
+            "Acoustic Bass","Electric Bass (finger)","Electric Bass (pick)","Fretless Bass","Slap Bass 1","Slap Bass 2","Synth Bass 1","Synth Bass 2",
+            "Violin","Viola","Cello","Contrabass","Tremolo Strings","Pizzicato Strings","Orchestral Harp","Timpani",
+            "String Ensemble 1","String Ensemble 2","Synth Strings 1","Synth Strings 2","Choir Aahs","Voice Oohs","Synth Voice","Orchestra Hit",
+            "Trumpet","Trombone","Tuba","Muted Trumpet","French Horn","Brass Section","Synth Brass 1","Synth Brass 2",
+            "Soprano Sax","Alto Sax","Tenor Sax","Baritone Sax","Oboe","English Horn","Bassoon","Clarinet",
+            "Piccolo","Flute","Recorder","Pan Flute","Blown Bottle","Shakuhachi","Whistle","Ocarina",
+            "Lead 1 (square)","Lead 2 (sawtooth)","Lead 3 (calliope)","Lead 4 (chiff)","Lead 5 (charang)","Lead 6 (voice)","Lead 7 (fifths)","Lead 8 (bass + lead)",
+            "Pad 1 (new age)","Pad 2 (warm)","Pad 3 (polysynth)","Pad 4 (choir)","Pad 5 (bowed)","Pad 6 (metallic)","Pad 7 (halo)","Pad 8 (sweep)",
+            "FX 1 (rain)","FX 2 (soundtrack)","FX 3 (crystal)","FX 4 (atmosphere)","FX 5 (brightness)","FX 6 (goblins)","FX 7 (echoes)","FX 8 (sci-fi)",
+            "Sitar","Banjo","Shamisen","Koto","Kalimba","Bag Pipe","Fiddle","Shanai",
+            "Tinkle Bell","Agogo","Steel Drums","Woodblock","Taiko Drum","Melodic Tom","Synth Drum","Reverse Cymbal",
+            "Guitar Fret Noise","Breath Noise","Seashore","Bird Tweet","Telephone Ring","Helicopter","Applause","Gunshot"]
+        inst_ctl=tk.Frame(inst_card,bg=surface); inst_ctl.pack(fill="x",padx=14,pady=14)
+        inst_choice=tk.StringVar(value=f"{int(getattr(self.music_opts,'program',0)):03d} — {GM_NAMES[int(getattr(self.music_opts,'program',0))%128]}")
+        inst_values=[f"{i:03d} — {name}" for i,name in enumerate(GM_NAMES)]
+        tk.Label(inst_ctl,text="Program",bg=surface,fg=text_c).pack(side="left"); ttk.Combobox(inst_ctl,textvariable=inst_choice,values=inst_values,state="readonly",width=36).pack(side="left",padx=(6,14))
+        inst_note=tk.StringVar(value="C4"); tk.Label(inst_ctl,text="Sample note",bg=surface,fg=text_c).pack(side="left"); ttk.Combobox(inst_ctl,textvariable=inst_note,values=[f"{n}{o}" for o in range(1,8) for n in NOTE_NAMES],state="readonly",width=7).pack(side="left",padx=6)
+        inst_info=tk.StringVar(); tk.Label(inst_card,textvariable=inst_info,bg=muted,fg=text_c,anchor="w",padx=10,pady=8).pack(fill="x",padx=14,pady=(0,12))
+        def _play_instrument():
+            o=_snapshot_options(); o.program=int(inst_choice.get().split(" — ",1)[0]); midi=_midi_notes([inst_note.get()],o); inst_info.set(f"Program {o.program}: {GM_NAMES[o.program]}   |   Input {inst_note.get()}   |   After transpose/clamp: {' + '.join(midi_to_note(m) for m in midi)}"); _write_and_play([(midi,_pick_velocity(o,0.5))],f"program_{o.program}")
+        ttk.Button(inst_card,text="Play instrument sample",command=_play_instrument).pack(anchor="w",padx=14,pady=(0,14))
+        _play_instrument()
+
+        # ---------- Dynamics & rhythm ----------
+        tab_dyn = ttk.Frame(nb, style="MP.TFrame")
+        nb.add(tab_dyn, text="Dynamics & Rhythm")
+        dyn_card = tk.Frame(tab_dyn, bg=surface, highlightthickness=1, highlightbackground=border)
+        dyn_card.pack(fill="both", expand=True, padx=8, pady=8)
+        tk.Label(dyn_card, text="Hear frequency → velocity and timing exactly as configured",
+                 bg=surface, fg=text_c, font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=14, pady=(14, 8))
+
+        dyn_freq = tk.DoubleVar(value=0.0)
+        dyn_value = tk.StringVar()
+        dyn_row = tk.Frame(dyn_card, bg=surface)
+        dyn_row.pack(fill="x", padx=14, pady=8)
+        tk.Label(dyn_row, text="Normalized frequency", bg=surface, fg=text_c).pack(side="left")
+        ttk.Scale(dyn_row, from_=0.0, to=1.0, variable=dyn_freq, length=300).pack(side="left", padx=12)
+        tk.Label(dyn_row, textvariable=dyn_value, bg=surface, fg=text_c, font=("Consolas", 10)).pack(side="left")
+
+        def _dyn_update(*_):
+            o = _snapshot_options()
+            dyn_value.set(f"f={dyn_freq.get():.2f}  →  velocity={_pick_velocity(o, dyn_freq.get())}")
+        dyn_freq.trace_add("write", _dyn_update)
+        _dyn_update()
+
+        rhythm_notes = ["C4", "E4", "G4", "C5"]
+        tk.Label(dyn_card,
+                 text="The rhythm preview emits four notes. Note duration and inter-note rest use the current Advanced Music Options.",
+                 bg=surface, fg=subtext, wraplength=900, justify="left").pack(anchor="w", padx=14, pady=(10, 8))
+
+        def _play_dyn():
+            o = _snapshot_options()
+            vel = _pick_velocity(o, dyn_freq.get())
+            events = []
+            for n in rhythm_notes:
+                midi = _midi_notes([n], o)
+                events.append((midi, vel))
+            _write_and_play(events, "dynamics_rhythm")
+
+        ttk.Button(dyn_card, text="Play dynamics & rhythm preview", command=_play_dyn).pack(anchor="w", padx=14, pady=8)
+        tk.Label(dyn_card,
+                 text="Note: MIDI Program selects the instrument patch. The exact timbre heard depends on the MIDI synthesizer/soundfont available on the system.",
+                 bg=surface, fg=subtext, wraplength=900, justify="left").pack(anchor="w", padx=14, pady=(8, 14))
+
+        # Refresh on tab changes so the summary follows live Advanced controls.
+        nb.bind("<<NotebookTabChanged>>", lambda _e: (_refresh_settings_label(), _dyn_update()))
+
+        def _close_playground():
+            try:
+                stop_midi()
+            except Exception:
+                pass
+            try:
+                self._music_playground_win = None
+            except Exception:
+                pass
+            try:
+                win.destroy()
+            except Exception:
+                pass
+
+        win.protocol("WM_DELETE_WINDOW", _close_playground)
+        win.bind("<Escape>", lambda _e: _close_playground())
+        win.bind("<Control-r>", lambda _e: (_rebuild_residue_rows(), _build_path_preview(False)))
 
 
-        win.protocol("WM_DELETE_WINDOW", lambda: (stop_midi(), win.destroy()))
+
+    def open_troubleshooting(self):
+        text = '\n# Troubleshooting\n\n## No path is found\n- Confirm that source and sink residues were resolved to valid graph indices.\n- Check whether source and sink are in the same connected component.\n- Verify that the same intended cutoff was used when building the network.\n\n## A residue cannot be found\n- Check chain ID and residue number.\n- For large assemblies, also verify SEGNAME and insertion code when applicable.\n- Confirm that the residue exists in the selected reference structure.\n\n## Cross-structure endpoints look wrong\n- Confirm the selected Reference PDB.\n- Do not use Skip alignment when numbering or residue identity differs between structures.\n- Inspect the alignment/mapping Excel output for the projected source and sink residues.\n\n## Path Explorer, Backbone, Similarity, or Property Tracks are empty\n- Run K-shortest paths first.\n- Confirm that the selected structure and source/sink pair actually have stored paths.\n- Check the session log for unmapped or missing residue tokens.\n\n## 3D viewer does not open\n- Confirm that the colored/interactive structure output exists.\n- Verify the PySide6/WebEngine installation used by the packaged build.\n- Check `MUSIKALL_sessionlog.txt` for viewer-generation errors.\n\n## MIDI playback or generation fails\n- Confirm that KSP results exist.\n- Verify the selected mapping and pitch settings.\n- Check that the output music directory is writable and inspect the session log for dependency or playback errors.\n\n## Results differ from a previous MUSIKALL run\nCompare the exact:\n- input structure files,\n- MUSIKALL build/version,\n- cutoff,\n- reference structure,\n- mapping/Skip alignment setting,\n- source and sink selections,\n- K value.\n\nA change in node identity, residue correspondence, network construction, or edge costs can change KSP results even when the GUI inputs appear similar.\n'
+        self._open_help_document(
+            "MUSIKALL — Troubleshooting",
+            "Practical checks for common mapping, path, visualization, and audio problems.",
+            text,
+            geometry="980x720",
+        )
+
+
+
+    def open_about_musikall(self):
+        text = '\n# About MUSIKALL\n\nMUSIKALL is a biomolecular network-analysis and sonification application developed by the Kurkcuoglu Levitas Lab at Istanbul Technical University.\n\nIts current workflow integrates:\n- residue interaction network construction from structure-derived heavy-atom contacts,\n- weighted K-shortest-path analysis,\n- residue-frequency and path-exploration outputs,\n- co-occurrence backbone analysis,\n- path similarity analysis,\n- biochemical property tracks,\n- structure visualization,\n- deterministic MIDI sonification.\n\nMUSIKALL is intended to support comparative, structure-based analysis of candidate communication routes and their residue-level organization. Network-derived routes and sonification outputs should be interpreted within the assumptions of the selected structural model and analysis parameters.\n\nFor reproducibility, report the MUSIKALL version/build together with the cutoff, K value, source/sink definitions, reference structure, and mapping mode used in the analysis.\n\nMUSIKALL is distributed under the MIT License. See the official repository for license and citation information.\n'
+        self._open_help_document(
+            "About MUSIKALL",
+            "Software scope, analytical capabilities, interpretation, and reproducibility notes.",
+            text,
+            geometry="900x660",
+        )
+
+
 
     def show_cite(self):
-            """Displays the citation information in a copyable but read-only format."""
-            cite_window = tk.Toplevel(self)
-            cite_window.title("How to Cite")
-            cite_window.geometry("700x250")
+        """Show a compact citation window with a direct link to the official repository."""
+        win = tk.Toplevel(self)
+        win.title("How to Cite MUSIKALL")
+        win.geometry("520x220")
+        win.minsize(480, 200)
+        win.transient(self)
 
-            tk.Label(cite_window, text="How to Cite MUSIKALL:", font=("Arial", 14, "bold")).pack(pady=10)
+        bg = getattr(self, "_theme_bg", "#f7f7f8")
+        fg = getattr(self, "_theme_fg", "#1f2937")
+        accent = getattr(self, "_theme_accent", "#5b6ee1")
+        win.configure(bg=bg)
 
-            citation_text = """         
-        1. Paper Name, Authors, Journal, Year.
+        frame = tk.Frame(win, bg=bg)
+        frame.pack(fill="both", expand=True, padx=28, pady=24)
 
-        Please cite these publications when using MUSIKALL.
-        """
+        tk.Label(
+            frame,
+            text="How to Cite MUSIKALL",
+            font=("Segoe UI", 16, "bold"),
+            bg=bg,
+            fg=fg,
+        ).pack(anchor="w")
 
-            cite_entry = tk.Text(cite_window, height=6, width=80, wrap="word", font=("Arial", 12), padx=10, pady=5)
-            cite_entry.insert("1.0", citation_text)
-            cite_entry.config(state="disabled", bg=self.cget("bg"), relief="flat")  # Read-only, düz arka plan
-            cite_entry.pack(padx=15, pady=5)
+        tk.Label(
+            frame,
+            text="Please use the citation information provided in the official MUSIKALL repository.",
+            font=("Segoe UI", 10),
+            bg=bg,
+            fg=fg,
+            justify="left",
+            wraplength=440,
+        ).pack(anchor="w", pady=(10, 14))
 
-            def copy_to_clipboard():
-                self.clipboard_clear()
-                self.clipboard_append(citation_text)
-                self.update()
-                messagebox.showinfo("Copied!", "Citation copied to clipboard.")
+        url = "https://github.com/zeynepguneryilmaz/MUSIKALL"
+        link = tk.Label(
+            frame,
+            text=url,
+            font=("Segoe UI", 10, "underline"),
+            bg=bg,
+            fg=accent,
+            cursor="hand2",
+        )
+        link.pack(anchor="w")
+        link.bind("<Button-1>", lambda _e: webbrowser.open(url))
 
-            tk.Button(cite_window, text="📋 Copy Citation", font=("Arial", 12, "bold"), command=copy_to_clipboard).pack(
-                pady=10)
+        win.bind("<Escape>", lambda _e: win.destroy())
 
     def show_Contact(self):
-        """Displays the Adjacency information with a copyable email field."""
-        Adjacency_window = tk.Toplevel(self)
-        Adjacency_window.title("Contact Us")
-        Adjacency_window.geometry("400x200")
+        """Display contact information in a polished, theme-aware card."""
+        P = getattr(self, "current_palette", palettes["aqua"])
+        win = tk.Toplevel(self)
+        win.title("Contact MUSIKALL")
+        win.geometry("640x410")
+        win.resizable(False, False)
+        win.configure(bg=P["bg"])
+        win.transient(self)
 
-        tk.Label(Adjacency_window, text="Contact Us", font=("Arial", 14, "bold")).pack(pady=10)
+        card = tk.Frame(win, bg=P["surface"], highlightthickness=1, highlightbackground=P["border"])
+        card.pack(fill="both", expand=True, padx=24, pady=24)
 
-        tk.Label(Adjacency_window, text="📍 Kurkcuoglu Levitas Lab., Istanbul Technical University", font=("Arial", 12)).pack(pady=5)
+        tk.Label(card, text="Contact MUSIKALL", font=("Segoe UI", 20, "bold"),
+                 bg=P["surface"], fg=P["text"], anchor="w").pack(fill="x", padx=26, pady=(24, 4))
+        tk.Label(card, text="Kurkcuoglu Levitas Lab • Istanbul Technical University",
+                 font=("Segoe UI", 10), bg=P["surface"], fg=P["subtext"], anchor="w").pack(fill="x", padx=26)
 
-        tk.Label(Adjacency_window, text="📧 Email:", font=("Arial", 12)).pack()
+        tk.Frame(card, height=4, bg=P["accent"]).pack(fill="x", pady=(18, 20))
 
-        # Read-only Entry for email (copyable but not editable)
+        tk.Label(card, text="Email", font=("Segoe UI", 9, "bold"),
+                 bg=P["surface"], fg=P["subtext"], anchor="w").pack(fill="x", padx=26)
+
         email = "ozdezeynepg@gmail.com"
-        email_entry = tk.Entry(Adjacency_window, font=("Arial", 12), width=30, justify="center")
-        email_entry.insert(0, email)
-        email_entry.config(state="readonly")
-        email_entry.pack(pady=5)
+        email_box = tk.Entry(card, font=("Consolas", 11), relief="flat",
+                             readonlybackground=P["muted"], fg=P["text"], justify="left")
+        email_box.insert(0, email)
+        email_box.config(state="readonly")
+        email_box.pack(fill="x", padx=26, pady=(6, 18), ipady=8)
 
-        # **Copy Button**
+        tk.Label(card,
+                 text="For questions about the software, analysis workflow, or reproducibility, include the MUSIKALL version/build and a concise description of the issue.",
+                 wraplength=540, justify="left", font=("Segoe UI", 10),
+                 bg=P["surface"], fg=P["text"], anchor="w").pack(fill="x", padx=26)
+
+        buttons = tk.Frame(card, bg=P["surface"])
+        buttons.pack(fill="x", padx=26, pady=(22, 24))
+
         def copy_email():
             self.clipboard_clear()
             self.clipboard_append(email)
             self.update()
-            messagebox.showinfo("Copied!", "Email copied to clipboard.")
+            messagebox.showinfo("Copied", "Email address copied to the clipboard.")
 
-        tk.Button(Adjacency_window, text="Copy Email", command=copy_email).pack(pady=10)
+        ttk.Button(buttons, text="Copy email", command=copy_email, style="Accent.TButton").pack(side="left")
+        ttk.Button(buttons, text="Close", command=win.destroy).pack(side="right")
+        win.bind("<Escape>", lambda _e: win.destroy())
+
+
+    def _install_text_placeholder(self, widget, placeholder):
+        """Show example text in a Text widget without treating it as user input."""
+        normal_fg = self.current_palette.get("text", "#1E293B")
+        placeholder_fg = self.current_palette.get("subtext", "#64748B")
+        widget._musikall_placeholder = placeholder
+        widget._musikall_has_placeholder = False
+
+        def show_placeholder():
+            if not widget.get("1.0", "end-1c").strip():
+                widget.delete("1.0", "end")
+                widget.insert("1.0", placeholder)
+                widget.configure(fg=placeholder_fg)
+                widget._musikall_has_placeholder = True
+
+        def on_focus_in(_event=None):
+            if getattr(widget, "_musikall_has_placeholder", False):
+                widget.delete("1.0", "end")
+                widget.configure(fg=normal_fg)
+                widget._musikall_has_placeholder = False
+
+        def on_focus_out(_event=None):
+            if not widget.get("1.0", "end-1c").strip():
+                show_placeholder()
+
+        widget.bind("<FocusIn>", on_focus_in, add="+")
+        widget.bind("<FocusOut>", on_focus_out, add="+")
+        show_placeholder()
+
+    @staticmethod
+    def _text_input_value(widget):
+        """Return Text-widget content while excluding the MUSIKALL placeholder."""
+        if getattr(widget, "_musikall_has_placeholder", False):
+            return ""
+        return widget.get("1.0", "end-1c").strip()
 
     def show_main_interface(self):
+        if not getattr(self, "_backend_ready", False):
+            if getattr(self, "_backend_error", None):
+                messagebox.showerror("MUSIKALL", f"Analysis engine could not be loaded:\n{self._backend_error}")
+            return
         self.welcome_frame.destroy()
 
-
+        # Main analysis workspace. Functionality and callback wiring are unchanged;
+        # this layout only improves visual hierarchy and spacing.
         bg = getattr(self, "current_palette", {}).get("bg", "#FFFFFF")
+        P = self.current_palette
 
-        self.main_pw = tk.PanedWindow(self, orient="horizontal", bg=bg, sashrelief="flat", bd=0)
-        self.main_pw.pack(fill="both", expand=True)
+        self.main_pw = tk.PanedWindow(
+            self, orient="horizontal", bg=bg, sashrelief="flat", bd=0,
+            sashwidth=8, sashpad=2
+        )
+        self.main_pw.pack(fill="both", expand=True, padx=16, pady=(12, 8))
 
+        # Fixed analysis column. The compact layout keeps all current sections visible
+        # without an additional scrollbar.
         self.left_col = tk.Frame(self.main_pw, bg=bg)
-        self.right_col = tk.Frame(self.main_pw, width=320, bg=bg)
+        self.right_col = tk.Frame(self.main_pw, width=360, bg=bg)
+        self.main_pw.add(self.left_col, stretch="always", minsize=660)
+        self.main_pw.add(self.right_col, minsize=330)
 
-        self.main_pw.add(self.left_col, stretch="always")
-        self.main_pw.add(self.right_col)
+        # ---------- 1. Structure & Network ----------
+        section1 = ttk.LabelFrame(
+            self.left_col, text="1  Structure & Network",
+            style="Card.TLabelframe", padding=(10, 6)
+        )
+        section1.pack(fill="x", padx=4, pady=(0, 4))
+        section1.columnconfigure(1, weight=1)
 
-        section1 = ttk.LabelFrame(self.left_col, text="📂 PDB Upload & Adjacency Matrix", style="Card.TLabelframe")
-        section1.pack(fill="x", padx=10, pady=5)
+        ttk.Label(
+            section1,
+            text="Create the analysis workspace, add PDB structures, and construct residue-level contact networks.",
+            style="SectionHint.TLabel"
+        ).grid(row=0, column=0, columnspan=5, sticky="w", pady=(0, 5))
 
-        reset_btn1 = ttk.Button(section1, text="⟲", width=2, command=self.reset_section1)
-        reset_btn1.grid(row=0, column=99, padx=(36,0), pady=5, sticky="ne")
-
-        ttk.Label(section1, text="Job Name:").grid(row=0, column=0, padx=5, pady=5)
+        ttk.Label(section1, text="Job name", style="FieldLabel.TLabel").grid(
+            row=1, column=0, padx=(0, 10), pady=3, sticky="w"
+        )
         self.jobname_entry = tk.Entry(section1, width=30)
-        self.jobname_entry.grid(row=0, column=1, padx=5, pady=5)
-        ttk.Button(section1, text="Create Job", command=self.create_job).grid(row=0, column=2, padx=5, pady=5)
-        ttk.Button(section1, text="Upload PDBs", command=self.upload_pdb_files).grid(row=1, column=0, padx=5, pady=5)
-
-        ttk.Label(section1, text="Cutoff Value (Å):").grid(row=1, column=1, padx=5, pady=5)
-        self.cutoff_entry = tk.Entry(section1, width=10)
-        self.cutoff_entry.grid(row=1, column=2, padx=5, pady=5)
-        self.cutoff_entry.insert(0, "4.5")
-        ttk.Button(section1, text="Calculate Adjacency Matrix", command=self.run_adj_matrix).grid(
-            row=1, column=3, padx=5, pady=5
+        self.jobname_entry.grid(row=1, column=1, padx=(0, 10), pady=3, sticky="ew")
+        ttk.Button(section1, text="Create Job", command=self.create_job, style="Accent.TButton").grid(
+            row=1, column=2, padx=(0, 8), pady=3
+        )
+        ttk.Button(section1, text="Upload PDBs", command=self.upload_pdb_files).grid(
+            row=1, column=3, padx=(0, 8), pady=3
+        )
+        ttk.Button(section1, text="⟲", width=2, command=self.reset_section1).grid(
+            row=1, column=4, padx=(2, 0), pady=3
         )
 
-        # 🔀 Section 3 — K Shortest Paths
-        section3 = ttk.LabelFrame(self.left_col, text="🔀 K Shortest Paths", style="Card.TLabelframe")
-        section3.pack(fill="x", padx=10, pady=5)
+        ttk.Label(section1, text="Contact cutoff", style="FieldLabel.TLabel").grid(
+            row=3, column=0, padx=(0, 10), pady=3, sticky="w"
+        )
+        cutoff_wrap = ttk.Frame(section1)
+        cutoff_wrap.grid(row=3, column=1, sticky="w", pady=3)
+        self.cutoff_entry = tk.Entry(cutoff_wrap, width=8)
+        self.cutoff_entry.pack(side="left")
+        self.cutoff_entry.insert(0, "4.5")
+        ttk.Label(cutoff_wrap, text="Å", style="Sub.TLabel").pack(side="left", padx=(5, 0))
+        ttk.Button(
+            section1, text="Calculate Adjacency Matrix",
+            command=self.run_adj_matrix, style="Accent.TButton"
+        ).grid(row=3, column=2, columnspan=2, padx=(0, 8), pady=3, sticky="w")
 
-        # ===== Inputs (flat, no nested frames with borders) =====
+        # ---------- 2. K-Shortest Paths ----------
+        section3 = ttk.LabelFrame(
+            self.left_col, text="2  K-Shortest Paths",
+            style="Card.TLabelframe", padding=(10, 6)
+        )
+        section3.pack(fill="x", padx=4, pady=(0, 4))
+        section3.columnconfigure(0, weight=1)
+
+        hdr = ttk.Frame(section3)
+        hdr.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        hdr.columnconfigure(0, weight=1)
+        ttk.Label(
+            hdr,
+            text="Define endpoints on a reference structure, map them when needed, and calculate alternative low-cost routes.",
+            style="SectionHint.TLabel"
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Button(hdr, text="⟲", width=2, command=self.reset_section3).grid(row=0, column=1, sticky="e")
+
         inputs = ttk.Frame(section3)
-        inputs.grid(row=1, column=0, sticky="ew", padx=10, pady=(2, 6))
+        inputs.grid(row=1, column=0, sticky="ew")
         inputs.columnconfigure(1, weight=1)
 
-        # Reference + Select + Skip
-        ttk.Label(inputs, text="Reference PDB:").grid(row=1, column=0, padx=(0, 8), pady=4, sticky="w")
-        self.ref_pdb_entry = getattr(self, "ref_pdb_entry", tk.Entry(inputs, width=40))
-        self.ref_pdb_entry.grid(row=1, column=1, padx=(0, 8), pady=4, sticky="ew")
-        ttk.Button(inputs, text="Select", command=self.select_reference_pdb).grid(row=1, column=2, padx=(0, 8), pady=4)
-
-        self.skip_alignment_var = getattr(self, "skip_alignment_var", tk.BooleanVar(value=False))
-        tools = ttk.Frame(inputs)
-        tools.grid(row=1, column=3, padx=(0, 0), pady=4, sticky="e")
-
-        ttk.Checkbutton(tools, text="Skip alignment", variable=self.skip_alignment_var).pack(side="left")
-
-        reset_btn3 = ttk.Button(section3, text="⟲", width=2, command=self.reset_section3)
-        reset_btn3.grid(row=1, column=99, padx=(40, 0), pady=5, sticky="ne")
-
-        # --- spacer after Reference row ---
-        _inputs_sp1 = ttk.Frame(inputs, height=20)
-        _inputs_sp1.grid(row=2, column=0, columnspan=4, sticky="ew")
-        _inputs_sp1.grid_propagate(False)
-
-        # Sources
-        ttk.Label(inputs, text="Source residues:").grid(row=3, column=0, padx=(0, 8), pady=4, sticky="w")
-
-        # 🔹 Multi-line Text widget (supports ';' and new lines)
-        self.source_res_entry = getattr(self, "source_res_entry", tk.Text(inputs, height=2, width=40))
-        self.source_res_entry.grid(row=3, column=1, padx=(0, 8), pady=4, sticky="ew")
-        self.source_res_entry.delete("1.0", "end")
-
-
-        info_btn_src = tk.Label(
-            inputs,
-            text="ⓘ",
-            fg=self.current_palette["accent"],
-            cursor="question_arrow",
-            bg=self.current_palette["bg"]
+        ttk.Label(inputs, text="Reference PDB", style="FieldLabel.TLabel").grid(
+            row=0, column=0, padx=(0, 10), pady=3, sticky="w"
         )
-        info_btn_src.grid(row=3, column=2, sticky="w", padx=(0, 8))
+        self.ref_pdb_entry = getattr(self, "ref_pdb_entry", tk.Entry(inputs, width=40))
+        self.ref_pdb_entry.grid(row=0, column=1, padx=(0, 8), pady=3, sticky="ew")
+        ttk.Button(inputs, text="Select", command=self.select_reference_pdb).grid(
+            row=0, column=2, padx=(0, 10), pady=3
+        )
+        self.skip_alignment_var = getattr(self, "skip_alignment_var", tk.BooleanVar(value=False))
+        ttk.Checkbutton(inputs, text="Skip alignment", variable=self.skip_alignment_var).grid(
+            row=0, column=3, pady=3, sticky="w"
+        )
+
+
+        ttk.Label(inputs, text="Source residues", style="FieldLabel.TLabel").grid(
+            row=2, column=0, padx=(0, 10), pady=3, sticky="nw"
+        )
+        self.source_res_entry = getattr(self, "source_res_entry", tk.Text(inputs, height=2, width=40))
+        self.source_res_entry.configure(relief="solid", bd=1, padx=7, pady=3, wrap="word")
+        self.source_res_entry.grid(row=2, column=1, padx=(0, 8), pady=3, sticky="ew")
+        self._install_text_placeholder(
+            self.source_res_entry,
+            "Example: A,150-153; B,45  or  PROT:A,150-153"
+        )
+        info_btn_src = tk.Label(
+            inputs, text="ⓘ", fg=self.current_palette["accent"],
+            cursor="question_arrow", bg=self.current_palette["bg"], font=("Segoe UI", 10)
+        )
+        info_btn_src.grid(row=2, column=2, sticky="nw", padx=(0, 8), pady=(7, 0))
         Tooltip(
             info_btn_src,
             "Input format:\n"
-            "- Basic format: CHAIN,start-end  or  CHAIN,res1,res2,...\n"
-            "  Example:  DA,1047-1050   or   DA,1047,1050,1100\n"
-            "\n"
-            "- If the PDB uses SEGNAMES (segment IDs):\n"
-            "    SEGNAME:CHAIN,start-end\n"
-            "    SEGNAME:CHAIN,res1,res2,...\n"
-            "  Example:  MC:DA,1047-1050   or   MC:DA,1047\n"
-            "\n"
-            "- Multiple entries can be separated by ';' or by new lines.\n"
-            "Examples:\n"
-            "DA,1047-1050; DB,2000\n"
-            "MC:DA,1047-1050; MB:DA,2000\n"
+            "- CHAIN,start-end or CHAIN,res1,res2,...\n"
+            "  Example: DA,1047-1050 or DA,1047,1050,1100\n\n"
+            "- With SEGNAME: SEGNAME:CHAIN,start-end\n"
+            "  Example: MC:DA,1047-1050\n\n"
+            "- Separate multiple entries with ';' or new lines."
         )
 
-        # --- spacer between Source and Sink ---
-        _inputs_sp2 = ttk.Frame(inputs, height=8)
-        _inputs_sp2.grid(row=4, column=0, columnspan=4, sticky="ew")
-        _inputs_sp2.grid_propagate(False)
-
-        # Sinks
-        ttk.Label(inputs, text="Sink residues:").grid(row=5, column=0, padx=(0, 8), pady=4, sticky="w")
-
+        ttk.Label(inputs, text="Sink residues", style="FieldLabel.TLabel").grid(
+            row=3, column=0, padx=(0, 10), pady=3, sticky="nw"
+        )
         self.sink_res_entry = getattr(self, "sink_res_entry", tk.Text(inputs, height=2, width=40))
-        self.sink_res_entry.grid(row=5, column=1, padx=(0, 8), pady=4, sticky="ew")
-        self.sink_res_entry.delete("1.0", "end")
-
-        info_btn_sink = tk.Label(
-            inputs,
-            text="ⓘ",
-            fg=self.current_palette["accent"],
-            cursor="question_arrow",
-            bg=self.current_palette["bg"]
+        self.sink_res_entry.configure(relief="solid", bd=1, padx=7, pady=3, wrap="word")
+        self.sink_res_entry.grid(row=3, column=1, padx=(0, 8), pady=3, sticky="ew")
+        self._install_text_placeholder(
+            self.sink_res_entry,
+            "Example: A,268-270; B,113  or  RNA:C,1490-1493"
         )
-        info_btn_sink.grid(row=5, column=2, sticky="w", padx=(0, 8))
+        info_btn_sink = tk.Label(
+            inputs, text="ⓘ", fg=self.current_palette["accent"],
+            cursor="question_arrow", bg=self.current_palette["bg"], font=("Segoe UI", 10)
+        )
+        info_btn_sink.grid(row=3, column=2, sticky="nw", padx=(0, 8), pady=(7, 0))
         Tooltip(
             info_btn_sink,
             "Input format:\n"
-            "- Basic format: CHAIN,start-end  or  CHAIN,res1,res2,...\n"
-            "  Example:  DA,2000-2010   or   DA,2000,2005,2010\n"
-            "\n"
-            "- If the PDB uses SEGNAMES (segment IDs):\n"
-            "    SEGNAME:CHAIN,start-end\n"
-            "    SEGNAME:CHAIN,res1,res2,...\n"
-            "  Example:  MC:DA,2000-2010   or   MC:DA,2000\n"
-            "\n"
-            "- Multiple entries can be separated by ';' or by new lines.\n"
-            "Examples:\n"
-            "DA,2000-2010; DB,2500\n"
-            "MC:DA,2000-2010; MB:DA,2500\n"
+            "- CHAIN,start-end or CHAIN,res1,res2,...\n"
+            "  Example: DA,2000-2010 or DA,2000,2005,2010\n\n"
+            "- With SEGNAME: SEGNAME:CHAIN,start-end\n"
+            "  Example: MC:DA,2000-2010\n\n"
+            "- Separate multiple entries with ';' or new lines."
         )
 
-        # —— small vertical spacing instead of a separator line ——
-        _spacer = ttk.Frame(section3, height=20)
-        _spacer.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 0))
-        _spacer.grid_propagate(False)
-
-        # ===== Actions row (Reset on the left  K + buttons on the right) =====
         actions = ttk.Frame(section3)
-        actions.grid(row=3, column=0, sticky="ew", padx=10, pady=(6, 6))
+        actions.grid(row=3, column=0, sticky="ew")
+        actions.columnconfigure(1, weight=1)
 
-        right = ttk.Frame(actions)
-        right.grid(row=0, column=1, sticky="e")
-
-        ttk.Label(right, text="K value:").pack(side="left", padx=(0, 6))
+        primary = ttk.Frame(actions)
+        primary.grid(row=0, column=0, sticky="w")
+        ttk.Label(primary, text="K", style="FieldLabel.TLabel").pack(side="left", padx=(0, 6))
         try:
             self.k_entry.destroy()
         except Exception:
             pass
-        self.k_entry = tk.Spinbox(right, from_=1, to=999, width=8)
+        self.k_entry = tk.Spinbox(primary, from_=1, to=999, width=7)
         self.k_entry.delete(0, "end")
         self.k_entry.insert(0, "20")
-        self.k_entry.pack(side="left", padx=(0, 12))
-
+        self.k_entry.pack(side="left", padx=(0, 10))
         _calc_cmd = getattr(self, "_on_ksp_calculate", None) or self.calculate_shortest_paths
-        ttk.Button(right, text="Calculate Shortest Paths", command=_calc_cmd).pack(side="left", padx=(0, 8))
-        ttk.Button(right, text="Path Explorer", command=self.open_path_explorer).pack(side="left")
-        ttk.Button(right, text="Cooccurrence Backbone", command=self.open_cooccurrence_backbone).pack(side="left",padx=(8, 0))
-        ttk.Button(right, text="Path Similarity", command=self.open_path_similarity).pack(side="left", padx=(8, 0))
-        # ===== Progress + status =====
+        ttk.Button(
+            primary, text="Calculate Shortest Paths",
+            command=_calc_cmd, style="Accent.TButton"
+        ).pack(side="left")
+
+        analysis_tools = ttk.Frame(actions)
+        analysis_tools.grid(row=0, column=1, sticky="e")
+        ttk.Button(analysis_tools, text="Path Explorer", command=self.open_path_explorer).pack(side="left", padx=(6, 0))
+        ttk.Button(analysis_tools, text="Cooccurrence Backbone", command=self.open_cooccurrence_backbone).pack(side="left", padx=(6, 0))
+        ttk.Button(analysis_tools, text="Path Similarity", command=self.open_path_similarity).pack(side="left", padx=(6, 0))
+
         self.ksp_prog = getattr(self, "ksp_prog", ttk.Progressbar(section3, mode="indeterminate"))
-        self.ksp_prog.grid(row=4, column=0, sticky="ew", padx=10, pady=(6, 2))
+        self.ksp_prog.grid(row=4, column=0, sticky="ew", pady=(5, 1))
         self.ksp_prog.grid_remove()
-
         self.ksp_status = getattr(self, "ksp_status", ttk.Label(section3, style="Sub.TLabel", text=""))
-        self.ksp_status.grid(row=5, column=0, sticky="w", padx=10, pady=(0, 10))
+        self.ksp_status.grid(row=5, column=0, sticky="w", pady=(0, 2))
 
-        #Bolum4
-        # ========= 📊 Property Tracks =========
-        section_prop = ttk.LabelFrame(self.left_col, text="📊 Property Tracks", style="Card.TLabelframe")
-        section_prop.pack(fill="x", padx=10, pady=5)
+        # ---------- 3. Property Tracks ----------
+        section_prop = ttk.LabelFrame(
+            self.left_col, text="3  Property Tracks",
+            style="Card.TLabelframe", padding=(10, 6)
+        )
+        section_prop.pack(fill="x", padx=4, pady=(0, 5))
+        section_prop.columnconfigure(0, weight=1)
 
-        # Checkboxes
+        ttk.Label(
+            section_prop,
+            text="Relate residue frequency scores to the selected physicochemical classifications.",
+            style="SectionHint.TLabel"
+        ).grid(row=0, column=0, columnspan=5, sticky="w", pady=(0, 4))
+
         self.chk_hydro_var = tk.BooleanVar()
         self.chk_charge_var = tk.BooleanVar()
         self.chk_aroma_var = tk.BooleanVar()
         self.chk_polarity_var = tk.BooleanVar()
 
-        ttk.Checkbutton(section_prop, text="Hydrophobicity", variable=self.chk_hydro_var).grid(
-            row=0, column=0, sticky="w"
-        )
-        ttk.Checkbutton(section_prop, text="Charge", variable=self.chk_charge_var).grid(
-            row=0, column=1, sticky="w"
-        )
-        ttk.Checkbutton(section_prop, text="Aromaticity", variable=self.chk_aroma_var).grid(
-            row=0, column=2, sticky="w"
-        )
-        ttk.Checkbutton(section_prop, text="Polarity", variable=self.chk_polarity_var).grid(
-            row=0, column=3, sticky="w"
-        )
+        props = ttk.Frame(section_prop)
+        props.grid(row=1, column=0, columnspan=5, sticky="ew", pady=(0, 4))
+        for idx, (label, var) in enumerate([
+            ("Hydrophobicity", self.chk_hydro_var),
+            ("Charge", self.chk_charge_var),
+            ("Aromaticity", self.chk_aroma_var),
+            ("Polarity", self.chk_polarity_var),
+        ]):
+            ttk.Checkbutton(props, text=label, variable=var).pack(side="left", padx=(0 if idx == 0 else 14, 0))
 
-        # Min score
-        ttk.Label(section_prop, text="Min FreqScore for plotting:").grid(
-            row=1, column=0, padx=4, pady=3, sticky="w"
-        )
+        opts = ttk.Frame(section_prop)
+        opts.grid(row=2, column=0, columnspan=5, sticky="ew")
+        ttk.Label(opts, text="Minimum FreqScore", style="FieldLabel.TLabel").pack(side="left", padx=(0, 6))
         self.min_score_var = tk.IntVar(value=1)
-        ttk.Spinbox(section_prop, from_=0, to=10, textvariable=self.min_score_var, width=5).grid(
-            row=1, column=1, sticky="w"
-        )
-
-
+        ttk.Spinbox(opts, from_=0, to=10, textvariable=self.min_score_var, width=5).pack(side="left", padx=(0, 16))
         self.only_figures_var = tk.BooleanVar()
-        ttk.Checkbutton(section_prop, text="Only figures (use existing Excel)", variable=self.only_figures_var).grid(
-            row=1, column=2, sticky="w"
+        ttk.Checkbutton(
+            opts, text="Only figures (use existing Excel)", variable=self.only_figures_var
+        ).pack(side="left", padx=(0, 16))
+        ttk.Button(
+            opts, text="Generate Tracks", command=self._run_property_tracks,
+            style="Accent.TButton"
+        ).pack(side="right")
+
+        # ---------- 4. Visualization ----------
+        section5 = ttk.LabelFrame(
+            self.left_col, text="4  Visualization",
+            style="Card.TLabelframe", padding=(10, 6)
         )
+        section5.pack(fill="x", padx=4, pady=(0, 4))
+        section5.columnconfigure(0, weight=1)
 
-        ttk.Button(section_prop, text="Generate Tracks", command=self._run_property_tracks).grid(
-            row=2, column=0, columnspan=4, pady=8
-        )
+        ttk.Label(
+            section5,
+            text="Export frequency-annotated structures or inspect them in the built-in interactive 3D viewer.",
+            style="SectionHint.TLabel"
+        ).grid(row=0, column=0, sticky="w", pady=(0, 4))
 
+        viz_actions = ttk.Frame(section5)
+        viz_actions.grid(row=1, column=0, sticky="w")
+        ttk.Button(
+            viz_actions, text="Save PDBs", command=self.save_colored_pdbs,
+            style="Accent.TButton"
+        ).pack(side="left", padx=(0, 8))
+        ttk.Button(viz_actions, text="Show 3D Structures", command=self.show_3d_structures).pack(side="left", padx=(0, 8))
+        ttk.Button(viz_actions, text="⟲", width=2, command=self.reset_section5).pack(side="left")
 
-        section5 = ttk.LabelFrame(self.left_col, text="🎨 Visualization", style="Card.TLabelframe")
-        section5.pack(fill="x", padx=10, pady=5)
-
-        reset_btn5 = ttk.Button(section5, text="⟲", width=2, command=self.reset_section5)
-        reset_btn5.grid(row=0, column=99, padx=(375,0), pady=0, sticky="ne")
-
-        ttk.Button(section5, text="Save PDBs", command=self.save_colored_pdbs).grid(row=0, column=0, padx=5,
-                                                                                            pady=5)
-        ttk.Button(section5, text="Show 3D Structures", command=self.show_3d_structures).grid(row=0, column=1, padx=5,
-                                                                                              pady=5)
-
-
+        # ---------- Right: Sonification ----------
         self.build_music_sidebar(self.right_col)
 
-
-        self.output_text = tk.Text(self, height=15, width=100)
-        self.output_text.pack(fill="both", padx=10, pady=10)
+        # ---------- Session log ----------
+        log_card = ttk.LabelFrame(self, text="Session Log", style="Card.TLabelframe", padding=(6, 4))
+        log_card.pack(fill="both", padx=16, pady=(0, 14))
+        self.output_text = tk.Text(
+            log_card, height=6, width=100, wrap="word", relief="flat", bd=0,
+            font=("Consolas", 9), padx=11, pady=9,
+            bg=P["surface"], fg=P["text"], insertbackground=P["text"]
+        )
+        log_scroll = ttk.Scrollbar(log_card, orient="vertical", command=self.output_text.yview)
+        self.output_text.configure(yscrollcommand=log_scroll.set)
+        log_scroll.pack(side="right", fill="y", padx=(0, 3), pady=3)
+        self.output_text.pack(side="left", fill="both", expand=True, padx=(3, 0), pady=3)
 
     def _run_property_tracks(self):
         import os
@@ -2289,6 +2645,7 @@ class MUSIKALL_GUI(tk.Tk):
             plot_property_tracks_single,
             plot_property_tracks_multi,
             export_property_excel_aligned,
+            save_property_legend_png,
             _base_key
         )
 
@@ -2421,7 +2778,7 @@ class MUSIKALL_GUI(tk.Tk):
                     self.log_output(f"ℹ No property rows generated for {canon}.\n")
                     continue
 
-
+                # Add the PDB column if it is missing
                 if "PDB" not in df.columns:
                     df["PDB"] = canon
 
@@ -2466,6 +2823,24 @@ class MUSIKALL_GUI(tk.Tk):
                 f"⚠ Required columns are missing in property dataframe: {', '.join(sorted(missing_cols))}\n"
             )
             return
+
+        # -------------------------------------------------
+        # Shared legend: save once for all property-track figures
+        # -------------------------------------------------
+        legend_png = os.path.join(job_dir, "PROPERTY_TRACKS__LEGEND.png")
+
+        try:
+            save_property_legend_png(
+                legend_png,
+                dimensions=dims,
+                ncols=4
+            )
+            self.log_output(
+                f"🎨 Shared property-track legend saved:\n"
+                f"   • {legend_png}\n"
+            )
+        except Exception as e:
+            self.log_output(f"⚠ Property-track legend generation failed: {e}\n")
 
         # -------------------------------------------------
         # 8) Per-structure plots
@@ -2549,62 +2924,78 @@ class MUSIKALL_GUI(tk.Tk):
         self.log_output("♻️ Section 2 reset.\n")
 
     def reset_section3(self):
+        """Reset the complete K-shortest-path section without touching loaded structures or matrices.
+
+        This deliberately invalidates all endpoint-dependent in-memory state so the
+        next calculation can only use the newly entered reference/source/sink values.
+        """
+        # Visible KSP inputs
+        self.ref_pdb_entry.delete(0, tk.END)
+
+        for widget in (self.source_res_entry, self.sink_res_entry):
+            widget.delete("1.0", "end")
+            widget.configure(fg=self.current_palette.get("text", "#1E293B"))
+            widget._musikall_has_placeholder = False
+            placeholder = getattr(widget, "_musikall_placeholder", "")
+            if placeholder:
+                widget.insert("1.0", placeholder)
+                widget.configure(fg=self.current_palette.get("subtext", "#64748B"))
+                widget._musikall_has_placeholder = True
+
+        self.skip_alignment_var.set(False)
         self.k_entry.delete(0, tk.END)
         self.k_entry.insert(0, "20")
 
-        # KSP-derived main results
+        # Cancel any queued continuation from an older mapping request.
+        self._pending_ksp = None
+
+        # Clear reference/mapping state.
+        self.reference_residues = []
+        self.pdb_residue_dict = {}
+
+        # Most importantly, remove previously resolved source/sink indices from
+        # every loaded structure while preserving PDB data and adj/edge matrices.
+        for _pdb_id, _pdata in (getattr(self, "pdb_info_dict", {}) or {}).items():
+            if isinstance(_pdata, dict):
+                _pdata["residue_dict"] = {
+                    "source_residues": [],
+                    "sink_residues": [],
+                }
+
+        # Clear all endpoint/path-derived products and caches.
         self.paths_dict = {}
         self.paths_dict_2 = {}
         self.all_normalized_frequencies = {}
-
-        # Excel output references
-        self.per_pdb_files = None
+        self.per_pdb_files = []
         self.overall_file = None
+        self.results_files = ()
 
-        # Viewer/cache results
-        self._interactive_cache = {}
-        self._interactive_cache_ready = False
-        self._interactive_cache_building = False
-
-        # Optional downstream analysis results
-        for attr in [
-            "cooccurrence_results",
-            "path_similarity_results",
-            "backbone_results",
-            "cooccurrence_matrix",
-            "path_similarity_matrix",
-            "global_frequency_map",
-        ]:
-            if hasattr(self, attr):
-                setattr(self, attr, {})
-
-        # Remove path-dependent state entries only
-        if hasattr(self, "state") and isinstance(self.state, dict):
-            for key in [
-                "paths_dict",
-                "paths_dict_2",
-                "all_normalized_frequencies",
-                "per_pdb_files",
-                "overall_file",
-                "cooccurrence_results",
-                "path_similarity_results",
-                "backbone_results",
-            ]:
-                self.state.pop(key, None)
-
-            self.state["last_completed_stage"] = "section3_reset"
-
-        self.last_completed_stage = "section3_reset"
+        # Invalidate the old mapping signature and endpoint-related session fields.
+        if not hasattr(self, "state") or not isinstance(self.state, dict):
+            self.state = {}
+        for _key in (
+            "mapping_signature",
+            "reference_pdb",
+            "source_residues_raw",
+            "sink_residues_raw",
+            "k",
+            "per_pdb_files",
+            "overall_file",
+        ):
+            self.state.pop(_key, None)
 
         self.log_output(
-            "♻️ Section 3 reset: KSP, frequencies, co-occurrence, path similarity, and viewer cache cleared.\n")
+            "♻️ K-shortest-path section reset: reference, source/sink mapping, "
+            "old paths, and frequency caches cleared. Loaded structures and "
+            "adjacency matrices were preserved.\n"
+        )
 
     import os, re, tkinter as tk
-
     from tkinter import ttk, messagebox
 
     # --- PATH EXPLORER ----------------------------------------------------------
     def open_path_explorer(self):
+        """Open a window for browsing paths after K-shortest-path calculation."""
         if not getattr(self, "paths_dict_2", None):
             messagebox.showerror("Error", "Please calculate K shortest paths first.")
             return
@@ -2658,21 +3049,48 @@ class MUSIKALL_GUI(tk.Tk):
     # ---------------- helpers ----------------
 
     def _canon_node(self, s: str) -> tuple[str, str]:
-        """'A,123' / 'A:123A' / ' A 123 ' → ('A','123A')  sadece sayıysa ('','123')."""
+        """
+        Matching identity for Path Explorer.
+
+        CHAIN:RES       -> ("CHAIN", "RES")
+        SEG:CHAIN:RES   -> ("SEG:CHAIN", "RES")
+        CHAIN,RES       -> ("CHAIN", "RES")
+        SEG:CHAIN,RES   -> ("SEG:CHAIN", "RES")
+        """
         import re
-        if not s: return ("", "")
-        t = str(s).strip().replace(";", ",")
+
+        if not s:
+            return ("", "")
+
+        t = str(s).strip()
+        t = t.replace(";", ",")
         t = re.sub(r"\s+", "", t)
+
+        # GUI input/display form:
+        # C,530
+        # EB:C,530
+        if "," in t:
+            left, rn = t.rsplit(",", 1)
+            return (left.upper(), rn)
+
+        # Internal token:
+        # C:530
+        # EB:C:530
         if ":" in t:
-            ch, rn = t.split(":", 1)
-        elif "," in t:
-            ch, rn = t.split(",", 1)
-        else:
-            ch, rn = "", t
-        return (ch.upper(), rn)
+            parts = [p for p in t.split(":") if p != ""]
+
+            if len(parts) == 2:
+                return (parts[0].upper(), parts[1])
+
+            if len(parts) >= 3:
+                segchain = ":".join(parts[:-1]).upper()
+                rn = parts[-1]
+                return (segchain, rn)
+
+        return ("", t)
 
     def _node_matches(self, want: tuple[str, str], got: tuple[str, str]) -> bool:
-        """Zincir aynı (veya istenen zincir boş) + residue tam eşit veya sayısal kısmı eşit."""
+        """Match residues when the chain is compatible and the residue identifier matches exactly or numerically."""
         wch, wrn = want
         gch, grn = got
         if wch and (wch != gch): return False
@@ -2701,10 +3119,14 @@ class MUSIKALL_GUI(tk.Tk):
         return None
 
     def _index_to_node_map(self, pdb_id):
-
+        """
+        Return mapping: graph_index -> residue token
+        Token: 'CHAIN:RES' veya 'SEG:CHAIN:RES'.
+        Priority: pdb_data['node_index_map'] (SEGNAME-aware and consistent with matrix indices)
+        """
         pdb_data = getattr(self, "pdb_info_dict", {}).get(pdb_id, {}) or {}
 
-
+        # 1) Preferred source: node_index_map generated by run_adj_matrix()
         nim = pdb_data.get("node_index_map")
         if isinstance(nim, dict) and len(nim) > 0:
             out = {}
@@ -2712,12 +3134,14 @@ class MUSIKALL_GUI(tk.Tk):
                 try:
                     out[int(k)] = str(v)
                 except Exception:
-
+                    # Skip keys that cannot be converted to integer indices
                     continue
             if out:
                 return out
 
-
+        # ---------------------------------------------------------------------
+        # 2) Fallback: reconstruct tokens from residue_dict
+        # ---------------------------------------------------------------------
         m = {}
         rd = (pdb_data or {}).get("residue_dict", {})
 
@@ -2760,7 +3184,10 @@ class MUSIKALL_GUI(tk.Tk):
         return m
 
     def _iter_paths_for_pdb(self, pdb_key):
-
+        """
+        Iterate over the output structure produced by calculate_shortest_paths().
+        yield: (list[str], cost|None)
+        """
         true_key = self._canon_pdb_key(pdb_key)
         root = (self.paths_dict_2.get(true_key) or {}) if true_key else {}
 
@@ -2783,7 +3210,7 @@ class MUSIKALL_GUI(tk.Tk):
                 c = costs[i] if i < len(costs) else None
                 yield norm_p, c
 
-        # Şema: { "s -> t": {"paths":[...], "costs":[...]} , ... }
+        # Schema: { "s -> t": {"paths":[...], "costs":[...]} , ... }
         if isinstance(root, dict):
             for bundle in root.values():
                 if isinstance(bundle, dict) and "paths" in bundle:
@@ -2799,7 +3226,7 @@ class MUSIKALL_GUI(tk.Tk):
 
                 seg, ch, rn = self._split_token(node)
 
-
+                # Combobox display: "SEG,CHAIN,RES" when SEGNAME exists, otherwise "CHAIN,RES"
                 if seg:
                     disp.append((seg, ch, rn))
                 else:
@@ -2838,12 +3265,15 @@ class MUSIKALL_GUI(tk.Tk):
         return False
 
     def _paths_for_pair(self, pdb_key, src, sink, show_all=False):
-
+        """
+        show_all=True returns all paths; otherwise returns paths matching the selected source and sink endpoints.
+        Returns: list[(path_str, cost)]
+        """
         out = []
-        want_src = self._canon_node(src)
+        want_src = self._canon_node(src)  # ('A','123') gibi (seg burada yok)
         want_sink = self._canon_node(sink)
 
-
+        # Use the same PDB identifier as the iterator to preserve index consistency
         true_key = self._canon_pdb_key(pdb_key)
         pdb_id_for_map = true_key if true_key is not None else pdb_key
 
@@ -2863,8 +3293,18 @@ class MUSIKALL_GUI(tk.Tk):
             # --- FIRST (source) match ---
             # Token ise: "CHAIN:RES" veya "SEG:CHAIN:RES"
             if ":" in first:
-                _seg1, ch1, rn1 = self._split_token(first)
-                first_ok = self._node_matches(want_src, (ch1.upper(), rn1))
+                seg1, ch1, rn1 = self._split_token(first)
+
+                id1 = (
+                    f"{seg1}:{ch1}".upper()
+                    if seg1
+                    else ch1.upper()
+                )
+
+                first_ok = self._node_matches(
+                    want_src,
+                    (id1, rn1)
+                )
             else:
                 # Index ise
                 try:
@@ -2874,8 +3314,18 @@ class MUSIKALL_GUI(tk.Tk):
 
             # --- LAST (sink) match ---
             if ":" in last:
-                _segN, chN, rnN = self._split_token(last)
-                last_ok = self._node_matches(want_sink, (chN.upper(), rnN))
+                segN, chN, rnN = self._split_token(last)
+
+                idN = (
+                    f"{segN}:{chN}".upper()
+                    if segN
+                    else chN.upper()
+                )
+
+                last_ok = self._node_matches(
+                    want_sink,
+                    (idN, rnN)
+                )
             else:
                 try:
                     last_ok = self._index_matches_residue(pdb_id_for_map, int(last), want_sink)
@@ -3301,24 +3751,30 @@ class MUSIKALL_GUI(tk.Tk):
     def log_output(self, message):
         """Thread-safe output logging + mirror to a per-job log file."""
 
+        # --- 1) Write to the GUI when output_text is available ---
         txt = getattr(self, "output_text", None)
         if txt is not None:
             try:
-
+                # Append in a thread-safe manner
                 def _append():
                     txt.insert("end", message)
                     txt.see("end")
-
+                    # Uncomment to prevent direct keyboard editing
+                    # txt.bind("<Key>", lambda e: "break")
 
                 txt.after(0, _append)
             except Exception:
+                # Fall back to the console if GUI logging fails
                 print(message, end="")
         else:
+            # Before the main interface is created (e.g., welcome screen)
             print(message, end="")
 
+        # --- 2) Mirror the same message to MUSIKALL_sessionlog.txt in the job folder ---
         try:
             job_dir = getattr(self, "current_job_folder", None)
 
+            # If the main interface is not ready, resolve job_dir from state/jobname
             if job_dir is None:
                 jobname = None
 
@@ -3338,9 +3794,11 @@ class MUSIKALL_GUI(tk.Tk):
 
             if job_dir:
                 log_path = os.path.join(job_dir, "MUSIKALL_sessionlog.txt")
+                # Open in append mode
                 with open(log_path, "a", encoding="utf-8") as f:
                     f.write(message)
         except Exception:
+            # Ignore log-file errors so they do not disrupt the GUI
             pass
 
     def _endpoints_from_pdb_paths(self, pdb_key):
@@ -3352,9 +3810,20 @@ class MUSIKALL_GUI(tk.Tk):
             sinks.add(last)
 
         def _fmt(node: str) -> str:
-            if ":" in node:
-                ch, rn = node.split(":", 1)
+            node = str(node).strip()
+
+            parts = [p for p in node.split(":") if p != ""]
+
+            if len(parts) == 2:
+                ch, rn = parts
                 return f"{ch},{rn}"
+
+            if len(parts) >= 3:
+                seg = ":".join(parts[:-2])
+                ch = parts[-2]
+                rn = parts[-1]
+                return f"{seg}:{ch},{rn}"
+
             return node
 
         def _sort_key(s: str):
@@ -3378,7 +3847,7 @@ class MUSIKALL_GUI(tk.Tk):
         top = ttk.Frame(tab)
         top.pack(fill="x", padx=8, pady=8)
 
-
+        # --- Derive Source/Sink only from path endpoints ---
         src_list, sink_list = self._endpoints_from_pdb_paths(pdb_key)
         if not src_list or not sink_list:
             ttk.Label(top, text="No paths found for this PDB.", foreground="#c00").grid(row=0, column=0, sticky="w")
@@ -3409,7 +3878,7 @@ class MUSIKALL_GUI(tk.Tk):
         ttk.Checkbutton(top, text="Show All Paths", variable=show_all_var) \
             .grid(row=0, column=4, padx=(4, 12))
 
-
+        # Optional Find control
         PLACEHOLDER = "Find: A,123 or 123"
         ttk.Label(top, text="Find residue").grid(row=0, column=5, sticky="w")
         find_var = tk.StringVar(value="")
@@ -3447,9 +3916,16 @@ class MUSIKALL_GUI(tk.Tk):
         find_ent.bind("<FocusOut>", _show_ph)
         _show_ph()
 
-
+        # Frequency Explorer butonu (varsa)
         def _open_freq_with_compat():
-
+            """
+            Compatibility layer:
+            If normalized frequencies are stored as:
+              {pdb: {"pdb_pct": {...}, ...}}
+            convert to:
+              {pdb: {...}}  (flat map)
+            so Frequency Explorer can read it.
+            """
             try:
                 af = getattr(self, "all_normalized_frequencies", None)
                 if isinstance(af, dict) and af:
@@ -3513,14 +3989,14 @@ class MUSIKALL_GUI(tk.Tk):
         )
         status.pack(side="left", fill="x", expand=True)
 
-
+        # --- Define _refresh_list after the Treeview and status widgets ---
         def _refresh_list(tv=tv, status=status):
             try:
                 tv.delete(*tv.get_children())
                 src_key = to_key(src_var.get())
                 sink_key = to_key(sink_var.get())
 
-
+                # veri
                 rows_all = self._paths_for_pair(pdb_key, "", "", show_all=True)
                 rows = self._paths_for_pair(pdb_key, src_key, sink_key, show_all=show_all_var.get())
 
@@ -3966,10 +4442,10 @@ class MUSIKALL_GUI(tk.Tk):
                     outs = run_cooccurrence_backbone_ensemble(
                         paths_dict_2=subset_pd2,
                         pdb_info_dict=self.pdb_info_dict,
-                        out_dir=backbone_root,
-                        logger=self,
+                        out_dir=backbone_root,  # FIX: correct arg name & location
+                        logger=self,  # FIX: logger must be object with .log_output
                         selected_pdb_keys=list(subset_pd2.keys()),
-                        selected_pairs=None,
+                        selected_pairs=None,  # already filtered upstream
                         strict=False,
                         save_counts_png=True,
                         do_kmeans=False,
@@ -4029,6 +4505,7 @@ class MUSIKALL_GUI(tk.Tk):
         ttk.Button(btns, text="Close", command=win.destroy).pack(side="left", padx=(8, 0))
 
         _load_endpoints_for_selected()
+
 
     def open_path_similarity(self):
         import os
@@ -4499,13 +4976,13 @@ class MUSIKALL_GUI(tk.Tk):
             messagebox.showerror("Error", "Please enter a job name!")
             return
 
+        # Create the job folder under Documents/MUSIKALL Projects/jobname
+        job_dir = create_job_folder(jobname)  # returns the absolute path
 
-        job_dir = create_job_folder(jobname)
-
-
+        # class attribute olarak kaydet
         self.jobname = jobname
         self.state["jobname"] = jobname
-        self.current_job = job_dir  #
+        self.current_job = job_dir  # use this resolved path consistently
         self.current_job_folder = job_dir
 
         os.makedirs(os.path.join(job_dir, "pdb_files"), exist_ok=True)
@@ -4543,9 +5020,6 @@ class MUSIKALL_GUI(tk.Tk):
             if not hasattr(self, "state") or not isinstance(self.state, dict):
                 self.state = {}
             self.state["jobname"] = jobname
-            self.last_completed_stage = "pdb_loaded"
-            self.state["last_completed_stage"] = self.last_completed_stage
-            self.autosave_job("pdb_loaded")
 
         except Exception as e:
             self.log_output(f"❌ Error loading PDBs: {str(e)}\n")
@@ -4573,9 +5047,6 @@ class MUSIKALL_GUI(tk.Tk):
                 self.state = {}
             self.state["jobname"] = jobname
             self.state["cutoff_value"] = float(cutoff_value)
-            self.last_completed_stage = "matrices_ready"
-            self.state["last_completed_stage"] = self.last_completed_stage
-            self.autosave_job("matrices_ready")
             self.log_output("✅ Adjacency matrices stage completed.\n")
 
         except Exception as e:
@@ -4592,8 +5063,8 @@ class MUSIKALL_GUI(tk.Tk):
         jobname = self.jobname_entry.get().strip()
         reference_pdb = self.ref_pdb_entry.get().strip()
 
-        source_res_input = self.source_res_entry.get().strip()
-        sink_res_input = self.sink_res_entry.get().strip()
+        source_res_input = self._text_input_value(self.source_res_entry)
+        sink_res_input = self._text_input_value(self.sink_res_entry)
 
         self.log_output(f"📝 Raw source input:\n{source_res_input}\n")
         self.log_output(f"📝 Raw sink input:\n{sink_res_input}\n")
@@ -4609,25 +5080,21 @@ class MUSIKALL_GUI(tk.Tk):
         if not hasattr(self, "state") or not isinstance(self.state, dict):
             self.state = {}
 
-
+        # ✅ store lightweight inputs
         self.state["jobname"] = jobname
         self.state["reference_pdb"] = reference_pdb
         self.state["source_residues_raw"] = source_res_input
         self.state["sink_residues_raw"] = sink_res_input
 
-
+        # Skip mapping/alignment path
         if hasattr(self, "skip_alignment_var") and self.skip_alignment_var.get():
             self.log_output("⏭️ Alignment skipped. Seeding residue indices from GUI…\n")
             self._seed_indices_from_gui(source_residues, sink_residues)
             self.log_output("✅ Residue indices seeded without alignment.\n")
 
-
-            self.last_completed_stage = "mapping_done"
-            self.state["last_completed_stage"] = self.last_completed_stage
-            self.autosave_job("mapping_done")
             return
 
-
+        # Normal alignment yolu
         self.log_output("📏 Running Residue Mapping...\n")
         threading.Thread(
             target=self.threaded_run_residue_mapping,
@@ -4636,10 +5103,20 @@ class MUSIKALL_GUI(tk.Tk):
         ).start()
 
     def _seed_indices_from_gui(self, source_residues, sink_residues):
+        """
+        Strict SEGNAME-aware residue lookup.
 
+        Rules:
+          - User supplied SEGNAME -> exact SEGNAME + chain + residue required.
+          - User did not supply SEGNAME -> only residues that genuinely have
+            no SEGNAME may be resolved.
+          - No fallback from a SEGNAME-qualified input to chain-only lookup.
+        """
 
         def _canon(x):
-            return str(x).strip().upper() if x is not None else None
+            if x in (None, "", " "):
+                return None
+            return str(x).strip().upper()
 
         def _digits_only(x):
             try:
@@ -4648,52 +5125,102 @@ class MUSIKALL_GUI(tk.Tk):
                 return None
 
         misses_total = 0
+
         for pdb_key, pdata in (getattr(self, "pdb_info_dict", {}) or {}).items():
+
             rcm = (pdata or {}).get("residue_chain_map", {}) or {}
 
-
+            # SEGNAME-optional lookup used when the user enters CHAIN,RESNUM.
+            # The key is accepted only when CHAIN+RESNUM identifies exactly one
+            # physical residue in this structure, regardless of whether that residue
+            # itself has a SEGNAME.
+            # (CHAIN, RESNUM) -> unique index, or None if ambiguous
             idxmap_simple = {}
 
+            # Exact SEGNAME lookup used only when the user explicitly supplies one.
+            # (SEGNAME, CHAIN, RESNUM) -> index
             idxmap_seg = {}
 
+            for ch_key, lst in rcm.items():
 
-            for ch, lst in rcm.items():
-                ch_u = _canon(ch)
                 for r in (lst or []):
+
                     rn_i = _digits_only(r.get("residue_num"))
                     ix = r.get("index")
+
                     if rn_i is None or ix is None:
                         continue
 
+                    try:
+                        ix = int(ix)
+                    except Exception:
+                        continue
 
+                    # IMPORTANT:
+                    # Do not use ch_key here because it may be "MC:D".
+                    # Real chain is stored inside residue metadata.
+                    real_chain = r.get("chain")
+                    if real_chain in (None, "", " "):
+                        real_chain = ch_key
+
+                    ch_u = _canon(real_chain)
+                    if ch_u is None:
+                        continue
+
+                    # Collect all actual segnames of this residue
+                    segs = []
+
+                    for sg in (r.get("all_segnames") or []):
+                        sg_u = _canon(sg)
+                        if sg_u and sg_u not in segs:
+                            segs.append(sg_u)
+
+                    primary_seg = _canon(r.get("segname"))
+                    if primary_seg and primary_seg not in segs:
+                        segs.append(primary_seg)
+
+                    # Always register CHAIN+RESNUM for SEGNAME-optional input.
+                    # If the same CHAIN+RESNUM occurs in more than one physical
+                    # residue (e.g. different ribosome SEGNAMEs), mark it ambiguous.
                     key = (ch_u, rn_i)
                     if key in idxmap_simple and idxmap_simple[key] != ix:
-
                         idxmap_simple[key] = None
                     else:
-                        idxmap_simple[key] = ix
+                        idxmap_simple.setdefault(key, ix)
 
-
-                    seg = r.get("segname")
-                    seg_u = _canon(seg)
-                    if seg_u:
-                        idxmap_seg[(seg_u, ch_u, rn_i)] = ix
+                    # Also register exact SEGNAME keys for explicit SEGNAME input.
+                    for sg_u in segs:
+                        idxmap_seg[(sg_u, ch_u, rn_i)] = ix
 
             def _mk_list(inp):
+
                 out = []
+
                 for it in (inp or []):
+
                     ch_u = _canon(it.get("chain"))
                     rn_i = _digits_only(it.get("residue_num"))
-                    seg = it.get("segname")
-                    seg_u = _canon(seg)
+
+                    seg_raw = it.get("segname")
+                    seg_u = _canon(seg_raw)
 
                     idx = None
 
-                    if seg_u is not None and rn_i is not None:
-                        idx = idxmap_seg.get((seg_u, ch_u, rn_i))
+                    if ch_u is not None and rn_i is not None:
 
-                    if idx is None and rn_i is not None:
-                        idx = idxmap_simple.get((ch_u, rn_i))
+                        if seg_u is not None:
+                            # STRICT:
+                            # User supplied SEGNAME -> exact lookup only.
+                            idx = idxmap_seg.get(
+                                (seg_u, ch_u, rn_i)
+                            )
+
+                        else:
+                            # No SEGNAME supplied -> ignore SEGNAME and resolve by
+                            # CHAIN+RESNUM, but only when that identity is unique.
+                            idx = idxmap_simple.get(
+                                (ch_u, rn_i)
+                            )
 
                     rec = {
                         "chain": it.get("chain"),
@@ -4701,32 +5228,71 @@ class MUSIKALL_GUI(tk.Tk):
                         "index": idx,
                     }
 
-                    if seg is not None:
-                        rec["segname"] = seg
+                    if seg_raw not in (None, "", " "):
+                        rec["segname"] = seg_raw
 
                     out.append(rec)
+
+                    if idx is None:
+                        if seg_u is not None:
+                            self.log_output(
+                                f"⚠ {pdb_key}: exact SEGNAME residue not found → "
+                                f"{seg_u}:{ch_u}:{rn_i}\n"
+                            )
+                        else:
+                            self.log_output(
+                                f"⚠ {pdb_key}: CHAIN+RESNUM is missing or ambiguous → "
+                                f"{ch_u}:{rn_i}\n"
+                                f"   Specify SEGNAME only if multiple residues share this identity.\n"
+                            )
+                    else:
+                        if seg_u is not None:
+                            self.log_output(
+                                f"✅ {pdb_key}: matched "
+                                f"{seg_u}:{ch_u}:{rn_i} → index {idx}\n"
+                            )
+                        else:
+                            self.log_output(
+                                f"✅ {pdb_key}: matched "
+                                f"{ch_u}:{rn_i} → index {idx}\n"
+                            )
+
                 return out
 
             src_list = _mk_list(source_residues)
             snk_list = _mk_list(sink_residues)
-            pdata["residue_dict"] = {"source_residues": src_list, "sink_residues": snk_list}
 
-            miss = sum(1 for x in (src_list + snk_list) if x.get("index") is None)
+            pdata["residue_dict"] = {
+                "source_residues": src_list,
+                "sink_residues": snk_list
+            }
+
+            miss = sum(
+                1
+                for x in (src_list + snk_list)
+                if x.get("index") is None
+            )
+
             misses_total += miss
+
             self.log_output(
                 f"🧭 Seeded {pdb_key}: "
-                f"{len(src_list)} src, {len(snk_list)} sink (missing index: {miss}).\n"
+                f"{len(src_list)} src, {len(snk_list)} sink "
+                f"(missing index: {miss}).\n"
             )
 
         if misses_total:
             self.log_output(
-                "⚠ Index not found for some residues. These nodes are ignored in K-shortest.\n"
+                "⚠ Index not found for some residues. "
+                "These nodes are ignored in K-shortest.\n"
             )
         else:
-            self.log_output("✅ The index was successfully mapped for all residues..\n")
+            self.log_output(
+                "✅ The index was successfully mapped for all residues.\n"
+            )
 
     def threaded_run_residue_mapping(self, jobname, reference_pdb, source_residues, sink_residues):
-
+        """Alignment & mapping in background thread; UI donmaz."""
         try:
             from MUSIKALL_functions1 import run_residue_mapping
             import os
@@ -4737,7 +5303,7 @@ class MUSIKALL_GUI(tk.Tk):
         try:
             self.log_output(f"🔍 Starting alignment for {jobname}…\n")
 
-
+            # 0) Reference file existence check (no heavy parse)
             if not reference_pdb or not os.path.exists(reference_pdb):
                 self.log_output(f"❌ Reference PDB not found: {reference_pdb}\n")
                 return
@@ -4761,22 +5327,7 @@ class MUSIKALL_GUI(tk.Tk):
 
             # 2) DO NOT seed indices here (seeding is only for skip_alignment mode)
             #    This block should only build reference_residues for visualization, if possible.
-            try:
-                if ref_key is not None:
-                    rd = (self.pdb_info_dict.get(ref_key, {}) or {}).get("residue_dict", {}) or {}
-                    self.reference_residues = []
-                    for r in (rd.get("source_residues", []) or []):
-                        r2 = dict(r);
-                        r2["type"] = "Source"
-                        self.reference_residues.append(r2)
-                    for r in (rd.get("sink_residues", []) or []):
-                        r2 = dict(r);
-                        r2["type"] = "Sink"
-                        self.reference_residues.append(r2)
-                else:
-                    self.reference_residues = []
-            except Exception:
-                self.reference_residues = []
+            # Reference must always be re-seeded from the CURRENT GUI source/sink input.
 
             # 3) The real alignment/mapping happens here
             try:
@@ -4790,12 +5341,9 @@ class MUSIKALL_GUI(tk.Tk):
                 self._pending_ksp = None
                 return
 
-            # 4) Stage + autosave (critical)
+            # 4) Preserve mapping state for the current session.
             if not hasattr(self, "state") or not isinstance(self.state, dict):
                 self.state = {}
-            self.last_completed_stage = "mapping_done"
-            self.state["last_completed_stage"] = self.last_completed_stage
-            self.autosave_job("mapping_done")
 
             # 5) Continue with pending KSP if any
             pend = getattr(self, "_pending_ksp", None)
@@ -4857,7 +5405,7 @@ class MUSIKALL_GUI(tk.Tk):
             return
         k = int(k_value)
 
-        # ✅ job folder tek kaynak
+        # Use the resolved job folder as the single source of truth
         jobpath = getattr(self, "current_job", "") or ""
         if not jobpath:
             messagebox.showerror("Error", "Job folder is not set. Please load a job or create a new one.")
@@ -4886,11 +5434,12 @@ class MUSIKALL_GUI(tk.Tk):
 
             self._seed_indices_from_gui(src, snk)
 
+            # Store the analysis signature
             if not hasattr(self, "state") or not isinstance(self.state, dict):
                 self.state = {}
             self.state["mapping_signature"] = sig
 
-            self._start_ksp_async(jobpath, k)  # 👈 jobpath gönder
+            self._start_ksp_async(jobpath, k)  # pass the resolved job path
             return
 
         # Alignment/mapping gerekli mi?
@@ -4911,20 +5460,21 @@ class MUSIKALL_GUI(tk.Tk):
                 self._pending_ksp = None
                 return
 
+            # Store the analysis signature before mapping starts
             if not hasattr(self, "state") or not isinstance(self.state, dict):
                 self.state = {}
             self.state["mapping_signature"] = sig
 
             threading.Thread(
                 target=self.threaded_run_residue_mapping,
-                args=(jobpath, reference_pdb, src, snk),
+                args=(jobpath, reference_pdb, src, snk),  # 👈 jobpath
                 daemon=True
             ).start()
             return
 
-        # mapping hazır → KSP
+        # Mapping ready → run KSP
         self._pending_ksp = None
-        self._start_ksp_async(jobpath, k)
+        self._start_ksp_async(jobpath, k)  # 👈 jobpath
 
     def _start_ksp_async(self, jobname, k):
         threading.Thread(
@@ -4933,36 +5483,6 @@ class MUSIKALL_GUI(tk.Tk):
             daemon=True
         ).start()
 
-    def _ksp_cache_path(self, jobpath):
-        import os
-        return os.path.join(jobpath, "ksp_cache.pkl")
-
-    def _save_ksp_cache(self, jobpath):
-        import pickle
-        payload = {
-            "paths_dict_2": getattr(self, "paths_dict_2", None),
-            "all_normalized_frequencies": getattr(self, "all_normalized_frequencies", None),
-            "overall_file": getattr(self, "overall_file", None),
-            "per_pdb_files": getattr(self, "per_pdb_files", None),
-            "pdb_info_dict": getattr(self, "pdb_info_dict", None),
-            "adjacency_matrices": getattr(self, "adjacency_matrices", None),
-            "net_cost_matrices": getattr(self, "net_cost_matrices", None),
-        }
-        with open(self._ksp_cache_path(jobpath), "wb") as f:
-            pickle.dump(payload, f)
-
-    def _restore_ksp_cache(self, jobpath):
-        import os, pickle
-        p = self._ksp_cache_path(jobpath)
-        if not os.path.exists(p):
-            return False
-        with open(p, "rb") as f:
-            payload = pickle.load(f) or {}
-        self.paths_dict_2 = payload.get("paths_dict_2")
-        self.all_normalized_frequencies = payload.get("all_normalized_frequencies")
-        self.overall_file = payload.get("overall_file")
-        self.per_pdb_files = payload.get("per_pdb_files")
-        return True
 
     def threaded_calculate_shortest_paths(self, jobpath, k):
         try:
@@ -4971,9 +5491,6 @@ class MUSIKALL_GUI(tk.Tk):
                 convert_paths_to_residues,
                 save_paths_to_excel,
             )
-            self.reset_section3()
-            self.k_entry.delete(0, tk.END)
-            self.k_entry.insert(0, str(k))
 
             self.log_output(f"⏳ Calculating k={k} shortest paths…\n")
 
@@ -4995,10 +5512,6 @@ class MUSIKALL_GUI(tk.Tk):
             self.state["k"] = int(k)
             self.state["per_pdb_files"] = per_pdb_files
             self.state["overall_file"] = overall_file
-            self.last_completed_stage = "ksp_done"
-            self.state["last_completed_stage"] = self.last_completed_stage
-            self.build_interactive_cache(force=True)
-
 
         except Exception as e:
             self.log_output(f"❌ Error calculating/analyzing shortest paths: {e}\n")
@@ -5092,6 +5605,7 @@ class MUSIKALL_GUI(tk.Tk):
             tree.column(c, width=120 if c != "Path (chain:res → ...)" else 600, anchor="w")
 
     def _build_overall_tab(self, parent):
+        """Replaces populate_overall_results_tab: chart (if matplotlib) + table fallback + export."""
         header = ttk.Frame(parent, style="Results.TFrame")
         header.pack(fill="x", pady=(6, 4), padx=8)
         ttk.Label(header, text="Overall Frequency Analysis", style="ResultsHeader.TLabel").pack(side="left")
@@ -5192,7 +5706,7 @@ class MUSIKALL_GUI(tk.Tk):
             ax = fig.add_subplot(111)
             labels = [r[0] for r in top_rows]
             vals = [r[1] for r in top_rows]
-            ax.bar(range(len(vals)), vals)  # renk vermiyoruz (UI yönergenize uygun)
+            ax.bar(range(len(vals)), vals)  # use the default Matplotlib color cycle
             ax.set_xticks(range(len(labels)))
             ax.set_xticklabels(labels, rotation=60, ha="right", fontsize=8)
             ax.set_ylabel("Normalized frequency")
@@ -5348,7 +5862,7 @@ class MUSIKALL_GUI(tk.Tk):
         return out
 
     def populate_results_tab(self, frame, pdb_id):
-
+        """Fills a tab with shortest path and cost analysis results."""
         self._lazy_matplotlib()
         tree = ttk.Treeview(frame, columns=("Source", "Sink", "Path", "Cost"), show="headings")
         tree.heading("Source", text="Source")
@@ -5376,7 +5890,6 @@ class MUSIKALL_GUI(tk.Tk):
                 sink = path[-1]
                 cost = costs[i] if i < len(costs) else ""
                 tree.insert("", "end", values=(source, sink, " → ".join(path), cost))
-
 
 ######
 
@@ -5461,9 +5974,14 @@ class MUSIKALL_GUI(tk.Tk):
         current = {"path": None, "events": [], "poll_id": None}
 
         def _load_events_for(path: str):
+            """Tabloyu event_logs[path] ile doldurur (nota isimleriyle)."""
 
             def _pretty_residue_label(x):
-
+                """
+                GUI display normalizer for residue labels.
+                Removes placeholders like NOSEG / None and leading ':'.
+                Does NOT affect audio; only the table text.
+                """
                 if x is None:
                     return ""
                 s = str(x).strip()
@@ -5484,13 +6002,13 @@ class MUSIKALL_GUI(tk.Tk):
 
             ev_tv.delete(*ev_tv.get_children())
             events = list(event_logs.get(path, []))
-
+            # Sort by start_sec
             events.sort(key=lambda e: (float(e.get("start_sec", 0.0)), str(e.get("residue") or e.get("token") or "")))
 
             for i, e in enumerate(events, start=1):
                 residue_raw = e.get("residue") or e.get("token") or ""
                 residue = _pretty_residue_label(residue_raw)
-                note_txt = e.get("note", "")
+                note_txt = e.get("note", "")  # C4 veya C4+E4+G4
                 meta = e.get("meta", {}) or {}
                 scope = meta.get("scope", "")
                 pidx = meta.get("path_index")
@@ -5519,20 +6037,20 @@ class MUSIKALL_GUI(tk.Tk):
                 ms = -1
             if ms < 0:
                 current["poll_id"] = None
-
+                # temizle highlight
                 for iid in ev_tv.get_children():
                     ev_tv.item(iid, tags=())
                 return
 
             t = ms / 1000.0
-
+            # aktif event’i bul
             ev_idx = None
             for i, e in enumerate(current["events"], start=1):
                 if float(e.get("start_sec", 0.0)) <= t < float(e.get("end_sec", 0.0)):
                     ev_idx = i
                     break
 
-
+            # highlight uygula
             for iid in ev_tv.get_children():
                 ev_tv.item(iid, tags=())
             if ev_idx is not None:
@@ -5543,6 +6061,7 @@ class MUSIKALL_GUI(tk.Tk):
             current["poll_id"] = win.after(100, _poll_highlight)
 
         def _play_selected(path=None):
+            # Select the first file when none is selected
             if not path:
                 sel = files_tv.focus() or ""
                 if not sel and written_files:
@@ -5567,7 +6086,7 @@ class MUSIKALL_GUI(tk.Tk):
                 messagebox.showerror("Play error", str(e))
                 return
 
-
+            # Cancel previous polling
             if current["poll_id"]:
                 try:
                     win.after_cancel(current["poll_id"])
@@ -5577,7 +6096,7 @@ class MUSIKALL_GUI(tk.Tk):
 
         play_btn.configure(command=lambda: _play_selected())
 
-
+        # Automatically load events for the first file when the list is not empty
         if written_files:
             try:
                 first = files_tv.get_children()[0]
@@ -5596,6 +6115,7 @@ class MUSIKALL_GUI(tk.Tk):
             return 4
 
     def reset_aa_defaults(self):
+        """Populate the amino-acid grid from the Advanced default scale and base octave."""
         scale_name = self.music_opts.default_scale_name
         base_oct = self.music_opts.default_base_octave
         aa_map = build_default_aa_mapping(scale_name, base_oct)  # {'ALA':'C4', ...}
@@ -5607,7 +6127,7 @@ class MUSIKALL_GUI(tk.Tk):
             widgets["oct"].insert(0, octv)
 
     def _collect_aa_mapping(self):
-
+        """Return the current amino-acid grid selection as {'ALA': 'C4', ...}."""
         mapping = {}
         for aa3, widgets in self.aa_widgets.items():
             note = widgets["note"].get() or "C"
@@ -5637,7 +6157,7 @@ class MUSIKALL_GUI(tk.Tk):
             self.log_output(f"❌ aamapping conversion failed: {e}\n")
             return
 
-
+        # event log iste
         opts = self.music_opts
         setattr(opts, "return_event_log", True)
 
@@ -5666,25 +6186,6 @@ class MUSIKALL_GUI(tk.Tk):
                 if written:
                     self.log_output(f"✅ Done. {len(written)} MIDI file(s) created.\n")
 
-
-                    if not hasattr(self, "state") or not isinstance(self.state, dict):
-                        self.state = {}
-                    self.last_completed_stage = "music_done"
-                    self.state["last_completed_stage"] = self.last_completed_stage
-
-
-                    self.state["last_music_files"] = list(written)
-
-
-                    try:
-                        self.after(0, lambda: self.autosave_job("music_done"))
-                    except Exception:
-
-                        try:
-                            self.autosave_job("music_done")
-                        except Exception:
-                            pass
-
                     self.open_music_player(written, event_logs=event_logs)
                 else:
                     self.log_output("⚠️ No MIDI files produced.\n")
@@ -5695,45 +6196,53 @@ class MUSIKALL_GUI(tk.Tk):
         threading.Thread(target=_run, daemon=True).start()
 
     def build_music_sidebar(self, parent):
-        box = ttk.LabelFrame(parent, text="🎵 Generate Audio", style="Card.TLabelframe", padding=(8, 8))
-        box.pack(side="top", fill="both", expand=True, padx=8, pady=8)
+        box = ttk.LabelFrame(
+            parent, text="Sonification", style="Card.TLabelframe", padding=(12, 10)
+        )
+        box.pack(side="top", fill="both", expand=True, padx=8, pady=(0, 8))
+
+        ttk.Label(
+            box,
+            text="Map residue identities to MIDI. Advanced Options controls mapping mode, harmony, dynamics, rhythm, pitch range, and output scope.",
+            style="SectionHint.TLabel", wraplength=330, justify="left"
+        ).pack(fill="x", pady=(0, 10))
 
         top = ttk.Frame(box, style="Card.TFrame")
-        top.pack(fill="x", pady=(0, 6))
-        ttk.Button(top, text="Advanced…", command=self.open_music_advanced).pack(side="left", padx=4)
-        ttk.Button(top, text="Reset Defaults", command=self.reset_aa_defaults).pack(side="left", padx=4)
+        top.pack(fill="x", pady=(0, 10))
+        ttk.Button(top, text="Advanced Options", command=self.open_music_advanced).pack(side="left")
+        ttk.Button(top, text="Reset Note Grid", command=self.reset_aa_defaults).pack(side="left", padx=(8, 0))
 
-        info_btn = tk.Label(top, text="ⓘ", fg=self.current_palette["accent"], cursor="question_arrow",
-                            bg=self.current_palette["bg"])
-        info_btn.pack(side="left", padx=(6, 0))
-        Tooltip(info_btn,
-                "AA→note assignment: choose a note and octave for each amino acid.\n"
-                "‘Reset Defaults’ will reassign notes according to the scale/octave set in Advanced Options.\n"
-                "‘Generate MIDI’ will sequence the paths and produce music files."
-                )
+        info_btn = tk.Label(
+            top, text="ⓘ", fg=self.current_palette["accent"], cursor="question_arrow",
+            bg=self.current_palette["bg"], font=("Segoe UI", 10)
+        )
+        info_btn.pack(side="right", padx=(6, 2))
+        Tooltip(
+            info_btn,
+            "The grid defines the root pitch used for residue-identity mapping.\n"
+            "Advanced Options contains property mapping, single-residue focus,\n"
+            "triads, instrument, tempo, duration, transpose, clamp and velocity settings."
+        )
 
+        ttk.Separator(box, orient="horizontal").pack(fill="x", pady=(0, 10))
+        ttk.Label(box, text="Residue note grid", style="FieldLabel.TLabel").pack(anchor="w", pady=(0, 5))
+        ttk.Label(
+            box, text="Root note and octave used when residue-grid mapping is selected.",
+            style="SectionHint.TLabel"
+        ).pack(anchor="w", pady=(0, 8))
 
         inner = ttk.Frame(box, style="Card.TFrame")
-        inner.pack(fill="both", expand=True, padx=4, pady=4)
+        inner.pack(fill="both", expand=True)
+        for c in (0, 3):
+            inner.columnconfigure(c, weight=1)
 
-
-        hdr = ttk.Frame(inner, style="Card.TFrame")
-        hdr.grid(row=0, column=0, columnspan=25, sticky="w", padx=4, pady=(2, 6))
-
-        ttk.Label(hdr, text="AA", font=("Arial", 10, "bold"), style="Card.TLabel").grid(row=0, column=0, padx=(40, 4),
-                                                                                        sticky="w")
-        ttk.Label(hdr, text="Note", font=("Arial", 10, "bold"), style="Card.TLabel").grid(row=0, column=1, padx=(82, 4),
-                                                                                          sticky="w")
-        ttk.Label(hdr, text="Oct", font=("Arial", 10, "bold"), style="Card.TLabel").grid(row=0, column=2, padx=(16, 4),
-                                                                                         sticky="w")
-
-        ttk.Label(hdr, text="AA", font=("Arial", 10, "bold"), style="Card.TLabel").grid(row=0, column=3, padx=(40, 4),
-                                                                                        sticky="w")
-        ttk.Label(hdr, text="Note", font=("Arial", 10, "bold"), style="Card.TLabel").grid(row=0, column=4, padx=(82, 4),
-                                                                                          sticky="w")
-        ttk.Label(hdr, text="Oct", font=("Arial", 10, "bold"), style="Card.TLabel").grid(row=0, column=5, padx=(21, 4),
-                                                                                         sticky="w")
-
+        # Compact two-column residue grid. Full names remain available as tooltips.
+        ttk.Label(inner, text="Residue", style="FieldLabel.TLabel").grid(row=0, column=0, sticky="w", padx=(2, 6), pady=(0, 4))
+        ttk.Label(inner, text="Note", style="FieldLabel.TLabel").grid(row=0, column=1, sticky="w", padx=3, pady=(0, 4))
+        ttk.Label(inner, text="Oct", style="FieldLabel.TLabel").grid(row=0, column=2, sticky="w", padx=3, pady=(0, 4))
+        ttk.Label(inner, text="Residue", style="FieldLabel.TLabel").grid(row=0, column=3, sticky="w", padx=(16, 6), pady=(0, 4))
+        ttk.Label(inner, text="Note", style="FieldLabel.TLabel").grid(row=0, column=4, sticky="w", padx=3, pady=(0, 4))
+        ttk.Label(inner, text="Oct", style="FieldLabel.TLabel").grid(row=0, column=5, sticky="w", padx=3, pady=(0, 4))
 
         self.aa_widgets = {}
         left_items = ALL_RESIDUES[:14]
@@ -5741,18 +6250,14 @@ class MUSIKALL_GUI(tk.Tk):
 
         def add_row(base_row, col_offset, item):
             aa3, aa1, fullname = item
-            ttk.Label(inner, text=f"{aa3} ({aa1}) – {fullname}", style="Card.TLabel").grid(
-                row=base_row, column=col_offset + 0, padx=4, pady=2, sticky="w")
+            lab = ttk.Label(inner, text=f"{aa3} ({aa1})", style="Card.TLabel")
+            lab.grid(row=base_row, column=col_offset + 0, padx=(2 if col_offset == 0 else 16, 6), pady=2, sticky="w")
+            Tooltip(lab, fullname)
 
-            note_frame = ttk.Frame(inner, style="Card.TFrame", padding=(2, 0))
-            note_frame.grid(row=base_row, column=col_offset + 1, padx=4, pady=2, sticky="w")
-
-            cb = ttk.Combobox(note_frame, values=NOTE_NAMES, width=6, state="readonly")
-            cb.pack(fill="x", expand=True)
-
+            cb = ttk.Combobox(inner, values=NOTE_NAMES, width=5, state="readonly")
+            cb.grid(row=base_row, column=col_offset + 1, padx=3, pady=2, sticky="w")
             oe = ttk.Entry(inner, width=3)
-            oe.grid(row=base_row, column=col_offset + 2, padx=4, pady=2, sticky="w")
-
+            oe.grid(row=base_row, column=col_offset + 2, padx=3, pady=2, sticky="w")
             self.aa_widgets[aa3] = {"note": cb, "oct": oe}
 
         for i, item in enumerate(left_items, start=1):
@@ -5763,30 +6268,35 @@ class MUSIKALL_GUI(tk.Tk):
         self.init_music_options()
         self.reset_aa_defaults()
 
+        ttk.Separator(box, orient="horizontal").pack(fill="x", pady=(10, 10))
         bottom = ttk.Frame(box, style="Card.TFrame")
-        bottom.pack(fill="x", pady=(10, 6))
-        ttk.Button(bottom, text="🎶 Generate Audio", command=self.generate_audio).pack(side="left", padx=6, pady=2)
+        bottom.pack(fill="x")
+        ttk.Button(
+            bottom, text="Generate Audio", command=self.generate_audio,
+            style="Accent.TButton"
+        ).pack(side="right")
 
     def init_music_options(self):
-
+        # Options object
         self.music_opts = MusicOptions()
 
+        # --- Amino-acid grid defaults used by Reset Defaults ---
         self.adv_scale_var = tk.StringVar(value=self.music_opts.default_scale_name)
         self.adv_base_octave_var = tk.IntVar(value=self.music_opts.default_base_octave)
 
-
+        # --- Mapping ---
         self._mapping_mode = tk.StringVar(value=self.music_opts.mapping_mode)  # "aa" | "property" | "single"
 
-
+        # Property panel
         self._prop_dimension = tk.StringVar(value=getattr(self.music_opts, "property_dimension", "hydrophobicity"))
         self._prop_octave = tk.IntVar(value=getattr(self.music_opts, "property_base_octave", 4))
         self._prop_triad_vars = {}
 
-
+        # Amino-acid grid sub-options
         self._chord_mode = tk.StringVar(value=self.music_opts.chord_mode)
         self._aa_triad = tk.StringVar(value=getattr(self.music_opts, "aa_triad_name", "Major (I)"))
 
-
+        # Single aapanel
         self._single_code = tk.StringVar(value=self.music_opts.single_aa_code)
         self._single_triad = tk.StringVar(value=self.music_opts.single_triad_name)
         self._single_octave = tk.IntVar(value=self.music_opts.single_base_octave)
@@ -5803,14 +6313,16 @@ class MUSIKALL_GUI(tk.Tk):
         self._clamp_lo = tk.IntVar(value=self.music_opts.clamp_low)
         self._clamp_hi = tk.IntVar(value=self.music_opts.clamp_high)
 
+        # --- Output grouping / Representation of aaFrequencies ---
+        # sadece: per_path | per_pair | per_pdb
         self._rep_res_freq = tk.StringVar(value=getattr(self.music_opts, "rep_res_freq", "per_pdb"))
 
-
+        # --- Rhythm: convert BPM, note value, and rest ratio into beats ---
         self._tempo_var = tk.IntVar(value=self.music_opts.tempo_bpm)
-        self._note_value = tk.StringVar(value="Quarter (1/4)")
-        self._rest_ratio = tk.DoubleVar(value=0.25)
+        self._note_value = tk.StringVar(value="Quarter (1/4)")  # UI etiketi
+        self._rest_ratio = tk.DoubleVar(value=0.25)  # note_length * rest_ratio
 
-
+        # Translate current beat values into UI labels
         beats = float(self.music_opts.note_beats or 1.0)
         _cands = [(4.0, "Whole (1/1)"), (2.0, "Half (1/2)"), (1.0, "Quarter (1/4)"),
                   (0.5, "Eighth (1/8)"), (0.25, "Sixteenth (1/16)")]
@@ -5966,7 +6478,7 @@ class MUSIKALL_GUI(tk.Tk):
         def tip(fr, text):
             ib = tk.Label(fr, text="ⓘ", fg=P["accent"], bg=P["bg"], cursor="question_arrow")
             Tooltip(ib, text) 
-            ib.pack(side="left", padx=(6, 0))
+            ib.pack(side="left", padx=(6, 0))  # Tooltip objen varsa
 
         def _note_value_to_beats(label: str) -> float:
             return {"Whole (1/1)": 4.0, "Half (1/2)": 2.0, "Quarter (1/4)": 1.0, "Eighth (1/8)": 0.5,
@@ -5978,13 +6490,13 @@ class MUSIKALL_GUI(tk.Tk):
         fr.grid(row=row, column=0, sticky="w", padx=8, pady=4) 
         row += 1
 
-        ttk.Label(fr, text="Normalized aaFrequencies", style="Card.TLabel").pack(side="left")
+        ttk.Label(fr, text="Output grouping", style="Card.TLabel").pack(side="left")
         tip(fr, "How files are grouped: per_path, per_pair, or per_pdb.")
         ttk.Combobox(fr, textvariable=self._rep_res_freq, state="readonly",
                      values=["per_path", "per_pair", "per_pdb"], width=14).pack(side="left", padx=8)
 
-        ttk.Label(fr, text="Select Representation", style="Card.TLabel").pack(side="left", padx=(12, 0))
-        tip(fr, "aa: identity grid  property: harmony by biochemical group  single: focus one AA.")
+        ttk.Label(fr, text="Mapping mode", style="Card.TLabel").pack(side="left", padx=(12, 0))
+        tip(fr, "aa: residue-identity grid; property: biochemical-class harmony; single: focus on one residue type.")
         cb_map = ttk.Combobox(fr, textvariable=self._mapping_mode, state="readonly",
                               values=["aa", "property", "single"], width=12)
         cb_map.pack(side="left", padx=8)
@@ -6000,9 +6512,9 @@ class MUSIKALL_GUI(tk.Tk):
         map_slot = ttk.Frame(inner, style="Card.TFrame") 
         map_slot.grid(row=row, column=0, sticky="we", padx=8, pady=(4, 6)) 
         row += 1
-        aa_frame = ttk.Labelframe(map_slot, text="aaGrid (identity → root)", padding=(6, 6), style="Card.TLabelframe")
+        aa_frame = ttk.Labelframe(map_slot, text="AA Grid (identity → root)", padding=(6, 6), style="Card.TLabelframe")
         prop_frame = ttk.Labelframe(map_slot, text="Property-based harmony", padding=(6, 6), style="Card.TLabelframe")
-        single_frame = ttk.Labelframe(map_slot, text="Single Residuefocus", padding=(6, 6), style="Card.TLabelframe")
+        single_frame = ttk.Labelframe(map_slot, text="Single-Residue Focus", padding=(6, 6), style="Card.TLabelframe")
 
         # -- ResidueGRID PANEL --
         fr_aa= ttk.Frame(aa_frame, style="Card.TFrame") 
@@ -6015,7 +6527,7 @@ class MUSIKALL_GUI(tk.Tk):
 
         fr_aa_tri = ttk.Frame(aa_frame, style="Card.TFrame") 
         fr_aa_tri.pack(fill="x", pady=2)
-        ttk.Label(fr_aa_tri, text="Residuetriad", style="Card.TLabel").pack(side="left")
+        ttk.Label(fr_aa_tri, text="Residue triad", style="Card.TLabel").pack(side="left")
         ttk.Combobox(fr_aa_tri, textvariable=self._aa_triad, state="readonly",
                      values=triad_names, width=18).pack(side="left", padx=8)
 
@@ -6034,13 +6546,13 @@ class MUSIKALL_GUI(tk.Tk):
         ttk.Label(fr_dim, text="Property dimension", style="Card.TLabel").pack(side="left")
         tip(fr_dim, "hydrophobicity, charge, or aromaticity")
         dim_cb = ttk.Combobox(fr_dim, textvariable=self._prop_dimension, state="readonly",
-                              values=["hydrophobicity", "charge", "aromaticity"], width=18)
+                              values=["hydrophobicity", "charge", "aromaticity", "polarity"], width=18)
         dim_cb.pack(side="left", padx=8)
 
         fr_oct = ttk.Frame(prop_frame, style="Card.TFrame") 
         fr_oct.pack(fill="x", pady=2)
         ttk.Label(fr_oct, text="Fallback base octave", style="Card.TLabel").pack(side="left")
-        tip(fr_oct, "If Residuegrid has no root for a token, use C at this octave.")
+        tip(fr_oct, "If residue grid has no root for a token, use C at this octave.")
         tk.Entry(fr_oct, textvariable=self._prop_octave, width=6,
                  bg=P["bg"], fg=P.get("fg", "#000"), insertbackground=P.get("fg", "#000")).pack(side="left", padx=8)
 
@@ -6057,6 +6569,7 @@ class MUSIKALL_GUI(tk.Tk):
                 "hydrophobicity": ["hydrophobic", "hydrophilic"],
                 "charge": ["positive", "negative", "neutral"],
                 "aromaticity": ["aromatic", "nonaromatic"],
+                "polarity": ["polar", "nonpolar"],
             }.get(dim, [])
             saved_map = getattr(self.music_opts, "property_triads", {}) or {}
             saved_for_dim = saved_map.get(dim, {}) if isinstance(saved_map, dict) else {}
@@ -6074,8 +6587,8 @@ class MUSIKALL_GUI(tk.Tk):
         # -- SINGLE ResiduePANEL --
         fr_s1 = ttk.Frame(single_frame, style="Card.TFrame") 
         fr_s1.pack(fill="x", pady=2)
-        ttk.Label(fr_s1, text="Residue(one-letter)", style="Card.TLabel").pack(side="left")
-        tip(fr_s1, "Only this Residueplays  others rest/skip.")
+        ttk.Label(fr_s1, text="Residue (one-letter)", style="Card.TLabel").pack(side="left")
+        tip(fr_s1, "Only this residue type plays; all others are rendered as rests or skipped.")
         tk.Entry(fr_s1, textvariable=self._single_code, width=4,
                  bg=P["bg"], fg=P.get("fg", "#000"), insertbackground=P.get("fg", "#000")).pack(side="left", padx=8)
 
@@ -6189,10 +6702,10 @@ class MUSIKALL_GUI(tk.Tk):
         tk.Entry(fr_rr, textvariable=self._rest_ratio, width=6,
                  bg=P["bg"], fg=P.get("fg", "#000"), insertbackground=P.get("fg", "#000")).pack(side="left", padx=8)
 
-        # ===== ResidueGrid Defaults =====
-        head("⚙ ResidueGrid Defaults")
+        # ===== Residue Grid Defaults =====
+        head("⚙ Residue Grid Defaults")
         fr_sc = line("Scale")
-        tip(fr_sc, "Scale used by ‘Reset Defaults’ to (re)fill the Residuegrid.")
+        tip(fr_sc, "Scale used by ‘Reset Defaults’ to (re)fill the residue grid.")
         ttk.Combobox(fr_sc, textvariable=self.adv_scale_var, state="readonly",
                      values=["Chromatic (C)", "Major (C)", "Minor (A)"], width=16).pack(side="left", padx=8)
 
@@ -6206,7 +6719,7 @@ class MUSIKALL_GUI(tk.Tk):
             # Structure
             self.music_opts.rep_res_freq = (self._rep_res_freq.get() or "per_pdb")
 
-            # Mapping + Residuegrid
+            # Mapping + residue grid
             self.music_opts.mapping_mode = (self._mapping_mode.get() or "aa")
             self.music_opts.chord_mode = (self._chord_mode.get() or "single")
             self.music_opts.aa_triad_name = (self._aa_triad.get() or "Major (I)")
@@ -6254,7 +6767,7 @@ class MUSIKALL_GUI(tk.Tk):
         btns = ttk.Frame(footer, style="Card.TFrame") 
         btns.pack(side="left", padx=8, pady=8)
         ttk.Button(btns, text="Save", command=_apply).pack(side="left", padx=6)
-        ttk.Button(btns, text="Save & Reset ResidueDefaults", command=_apply_and_reset).pack(side="left", padx=6)
+        ttk.Button(btns, text="Save & Reset Residue Defaults", command=_apply_and_reset).pack(side="left", padx=6)
 
         # ===== finalize mapping panels initial state =====
         _refresh_aa_triad_row()
@@ -6279,6 +6792,15 @@ class MUSIKALL_GUI(tk.Tk):
         ).start()
 
     def threaded_save_colored_pdbs(self, jobname_or_path):
+        """
+        1) Write per-PDB colored models into:
+             <job>/<pdb_base>/<pdb_base>_colored.pdb    (and mmCIF if your function supports it)
+           using self.all_normalized_frequencies
+
+        2) Write ONE reference PDB colored by GLOBAL/TOTAL across all conformers into:
+             <job>/GLOBAL_TOTAL__<refbase>__colored.pdb
+           using self.paths_dict_2
+        """
         import os
 
         try:
@@ -6315,6 +6837,7 @@ class MUSIKALL_GUI(tk.Tk):
             self.log_output(f"📁 Job dir: {job_dir}\n")
             self.log_output(f"📁 PDB dir: {pdb_dir}\n")
 
+            # --- 1) per-PDB colored models ---
             try:
                 from MUSIKALL_functions1 import save_colored_pdbs as pr_save_colored_pdbs
                 pr_save_colored_pdbs(
@@ -6329,6 +6852,7 @@ class MUSIKALL_GUI(tk.Tk):
             except Exception as e:
                 self.log_output(f"❌ Per-PDB coloring failed: {e}\n")
 
+            # --- 2) GLOBAL/TOTAL colored reference PDB into job root ---
             try:
                 from MUSIKALL_functions1 import (
                     save_global_total_colored_reference_pdb as pr_save_global_total
@@ -6336,26 +6860,17 @@ class MUSIKALL_GUI(tk.Tk):
                 paths_dict_2 = getattr(self, "paths_dict_2", None) or {}
 
                 pr_save_global_total(
-                    job_dir,
+                    job_dir,  # IMPORTANT: pass resolved folder path
                     paths_dict_2,
-                    reference_pdb=None,
+                    reference_pdb=None,  # default: first .pdb in <job>/pdb_files
                     logger=self
                 )
                 self.log_output("🎨 GLOBAL/TOTAL colored reference PDB saved in the job folder.\n")
             except Exception as e:
                 self.log_output(f"⚠️ GLOBAL/TOTAL coloring skipped: {e}\n")
 
-            if not hasattr(self, "state") or not isinstance(self.state, dict):
-                self.state = {}
-            self.last_completed_stage = "colored_models_done"
-            self.state["last_completed_stage"] = self.last_completed_stage
-            self.state["colored_models_dir"] = str(job_dir)
-
+            # Refresh the interactive viewer cache after writing colored models.
             self.build_interactive_cache(force=True)
-            try:
-                self.after(0, lambda: self.autosave_job("colored_models_done"))
-            except Exception:
-                self.autosave_job("colored_models_done")
 
         except Exception as e:
             self.log_output(f"❌ Error saving colored PDBs: {e}\n")
@@ -6405,8 +6920,7 @@ class MUSIKALL_GUI(tk.Tk):
             if getattr(sys, "frozen", False):
                 base_dir = os.path.dirname(sys.executable)
                 viewer_exe = os.path.join(
-                    base_dir,
-                    "MUSIKALL_3d_viewer",
+                    os.path.dirname(sys.executable),
                     "MUSIKALL_3d_viewer.exe"
                 )
 
@@ -6444,15 +6958,21 @@ class MUSIKALL_GUI(tk.Tk):
     def _draw_backbone_preview(self, parent_frame, structure,
                                start_residues=None, end_residues=None,
                                freq_map=None):
-
+        """
+        Offline 3D preview using a C-alpha polyline and frequency-colored beads.
+        - Bead size scales with frequency while retaining a visible baseline at f=0.
+        - Start/End nodes use outlined triangles with dedicated labels.
+        - Micro-labels are small, bead-colored, and drawn behind the beads;
+          press L to toggle labels and D to change decluttering density.
+        """
         self._lazy_matplotlib()
 
         from matplotlib.figure import Figure
         from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
         from matplotlib import cm
         from matplotlib import colors as mcolors
-        import numpy as np
-
+        
+        # --- Helper: start/end set used to suppress micro-labels ---
         def _norm_keys(res_list):
             S = set()
             if not res_list:
@@ -6470,7 +6990,7 @@ class MUSIKALL_GUI(tk.Tk):
         END_KEYS = _norm_keys(end_residues)
         SKIP_KEYS = START_KEYS | END_KEYS
 
-
+        # --- 1) C-alpha coordinates ---
         chains = {}
         try:
             for model in structure:
@@ -6510,9 +7030,9 @@ class MUSIKALL_GUI(tk.Tk):
             self._embedded_canvases.append(canvas)
             return canvas
 
-
+        # --- 2) Frekans normalize 0–1 ---
         lookup = {}
-        orig_pct = {}
+        orig_pct = {}  # retain original percentage values
 
         if isinstance(freq_map, dict) and freq_map:
             tmp = {}
@@ -6527,13 +7047,14 @@ class MUSIKALL_GUI(tk.Tk):
                 except Exception:
                     continue
 
-
+            # Interpret freq_map values as percentages on a 0–100 scale
+            # Convert to 0–1 for color mapping without renormalizing by the maximum
             for key, v in tmp.items():
-                v_clamped = max(0.0, min(float(v), 100.0))
-                orig_pct[key] = v_clamped
-                lookup[key] = v_clamped / 100.0
+                v_clamped = max(0.0, min(float(v), 100.0))  # clamp to the 0–100 range
+                orig_pct[key] = v_clamped  # true percentage for labels
+                lookup[key] = v_clamped / 100.0  # 0–1 value for color mapping
 
-
+        # --- 3) Figure and axes ---
         fig = Figure(figsize=(6, 5), dpi=100)
         ax = fig.add_subplot(111, projection="3d")
 
@@ -6541,11 +7062,11 @@ class MUSIKALL_GUI(tk.Tk):
             xs, ys, zs, _, _ = zip(*pts)
             ax.plot(xs, ys, zs, linewidth=1.1, alpha=0.65, color="#8a8a8a")
 
-
+        # --- 4) Data arrays and compact labels ---
         all_x, all_y, all_z = [], [], []
         all_val, all_lbl, all_key = [], [], []
         norm = mcolors.Normalize(vmin=0.0, vmax=1.0, clip=True)
-        threshold = 0.05
+        threshold = 0.05  # Threshold for displaying frequency in labels
 
         for _, pts in chains.items():
             for (x, y, z, ch, rid) in pts:
@@ -6567,6 +7088,7 @@ class MUSIKALL_GUI(tk.Tk):
 
         all_val_arr = np.asarray(all_val, float)
 
+        # --- 5) Micro-labels: draw first so beads remain on top ---
         from matplotlib import patheffects as pe
 
         def _rgba_to_hex(rgba):
@@ -6578,8 +7100,8 @@ class MUSIKALL_GUI(tk.Tk):
         rgba_colors = cm.plasma(norm(all_val_arr))
         hex_colors = [_rgba_to_hex(rgba) for rgba in rgba_colors]
 
-        micro_labels = []
-        widget_micro_visible_default = True
+        micro_labels = []  # bu canvasa ait list
+        widget_micro_visible_default = True  # visible by default
 
         for i, (x, y, z) in enumerate(zip(all_x, all_y, all_z)):
             ch, rid = all_key[i]
@@ -6588,18 +7110,18 @@ class MUSIKALL_GUI(tk.Tk):
                 continue
             rgba = rgba_colors[i]
             stroke_fg = "white" if _luminance(rgba) < 0.45 else "black"
-
+            # small, behind the beads, clipped to the axes
             txt = ax.text(
                 x, y, z, all_lbl[i],
                 color=hex_colors[i],
                 fontsize=6,
-                zorder=1,
+                zorder=1,  # low z-order keeps scatter points above labels
                 clip_on=True
             )
             txt.set_path_effects([pe.withStroke(linewidth=1.2, foreground=stroke_fg, alpha=0.9)])
             micro_labels.append(txt)
 
-
+        # --- 6) Scatter: draw beads above labels ---
         size_min, size_max, gamma = 110.0, 360.0, 0.65
         vals_gamma = np.power(all_val_arr, gamma)
         sizes = size_min + (size_max - size_min) * vals_gamma
@@ -6608,11 +7130,11 @@ class MUSIKALL_GUI(tk.Tk):
             all_x, all_y, all_z,
             s=sizes,
             c=all_val_arr, cmap=cm.plasma, norm=norm,
-            marker="o", depthshade=True, zorder=10
+            marker="o", depthshade=True, zorder=10  # beads in the foreground
         )
         sc.set_picker(True)
 
-
+        # --- Colorbar (inset) ---
         try:
             from mpl_toolkits.axes_grid1.inset_locator import inset_axes
             ticks = np.linspace(0, 1, 5)
@@ -6621,7 +7143,7 @@ class MUSIKALL_GUI(tk.Tk):
                              bbox_transform=ax.transAxes, borderpad=0.0)
             cb = fig.colorbar(sc, cax=cax, orientation="vertical", ticks=ticks)
 
-
+            # Etiketler % cinsinden
             cb.set_label("Frequency (%)", fontsize=9)
             cb.ax.set_yticklabels([f"{int(t * 100)}" for t in ticks])
             cb.ax.tick_params(labelsize=8)
@@ -6629,7 +7151,7 @@ class MUSIKALL_GUI(tk.Tk):
         except Exception:
             pass
 
-
+        # --- 7) Start/End overlay with outlined triangles and dedicated labels ---
         def _outline_residues(res_list, edge_hex, marker):
             if not res_list:
                 return
@@ -6666,7 +7188,7 @@ class MUSIKALL_GUI(tk.Tk):
         _outline_residues(start_residues, "#00e676", "^")
         _outline_residues(end_residues, "#ff5252", "v")
 
-
+        # --- 8) Axis appearance ---
         all_pts = np.column_stack([all_x, all_y, all_z]) if all_x else np.zeros((0, 3))
         if all_pts.size:
             spans = np.ptp(all_pts, axis=0)
@@ -6684,12 +7206,13 @@ class MUSIKALL_GUI(tk.Tk):
         except Exception:
             pass
 
-
+        # --- 9) Canvas and keyboard shortcuts ---
         canvas = FigureCanvasTkAgg(fig, master=parent_frame)
         canvas.draw()
         widget = canvas.get_tk_widget()
         widget.pack(fill="both", expand=True)
 
+        # L ile mikro-etiket toggle
         def _toggle_micro_labels(event=None):
             nonlocal widget_micro_visible_default
             widget_micro_visible_default = not widget_micro_visible_default
@@ -6702,10 +7225,10 @@ class MUSIKALL_GUI(tk.Tk):
         widget.bind("<Key-L>", _toggle_micro_labels)
         widget.focus_set()
 
-
+        # --- 10) Decluttering and density mode controlled by D ---
         import numpy as _np
         from matplotlib.transforms import Bbox
-        prior_idx = _np.argsort(-vals_gamma)
+        prior_idx = _np.argsort(-vals_gamma)  # highest frequency first
         density_modes = [("Dense", 2), ("Smart", 8), ("Sparse", 16)]
         widget._label_density_mode = 1
 
@@ -6721,11 +7244,11 @@ class MUSIKALL_GUI(tk.Tk):
             renderer = canvas.get_renderer()
             _, pad = density_modes[widget._label_density_mode]
             taken = []
-
+            # Start with all valid labels visible
             for t in micro_labels:
                 if t is not None:
                     t.set_visible(True)
-
+            # Hide overlapping labels according to priority
             for i in prior_idx:
                 t = micro_labels[i]
                 if t is None or (not t.get_visible()):
@@ -6746,8 +7269,9 @@ class MUSIKALL_GUI(tk.Tk):
 
         widget.bind("<Key-d>", _cycle_density)
         widget.bind("<Key-D>", _cycle_density)
-        _declutter_labels()
+        _declutter_labels()  # initial layout
 
+        # --- 11) Hover tooltip independent of micro-label visibility ---
         try:
             import mplcursors
             cur = mplcursors.cursor(sc, hover=True)
@@ -6764,7 +7288,7 @@ class MUSIKALL_GUI(tk.Tk):
         except Exception:
             pass
 
-
+        # --- 12) Per-canvas size scaling ---
         widget._size_scale_factor = 1.0
 
         def _apply_size():
@@ -6791,171 +7315,18 @@ class MUSIKALL_GUI(tk.Tk):
         self._embedded_canvases.append(canvas)
         return canvas
 
-    def save_job(self):
-        jobname = self.jobname_entry.get().strip()
-        if not jobname:
-            messagebox.showerror("Error", "Please create/select a job first.")
-            return
-
-        try:
-            from MUSIKALL_functions1 import save_job_snapshot
-            job_dir = save_job_snapshot(jobname, self, also_save_run=False)
-            self.log_output(f"💾 Job saved: {job_dir}\n")
-        except Exception as e:
-            self.log_output(f"❌ Save job failed: {e}\n")
-            messagebox.showerror("Save Job", str(e))
-
-    def autosave_job(self, stage=None):
-
-        try:
-            jobpath = getattr(self, "current_job_folder", None) or getattr(self, "current_job", None)
-            if not jobpath:
-                return
-
-            # her zaman state + pdb_info_dict
-            self._save_job_state(jobpath)
-
-            st = stage or getattr(self, "last_completed_stage", "")
-
-            if st in ("matrices_ready", "mapping_done", "ksp_done", "music_done", "colored_models_done"):
-                self._save_matrices_cache(jobpath)
-
-            if st in ("ksp_done", "music_done", "colored_models_done"):
-
-                self._save_ksp_cache(jobpath)
-
-        except Exception as e:
-            self.log_output(f"⚠ Autosave failed: {e}\n")
-
-    def load_job(self):
-        from tkinter import filedialog, messagebox
-        import os
-
-        job_dir = filedialog.askdirectory(title="Select MUSIKALL Job Folder")
-        if not job_dir:
-            return
-
-        try:
-            self.current_job = job_dir
-
-            from MUSIKALL_functions1 import load_job_snapshot
-            state = load_job_snapshot(job_dir, self)
-
-            jobname = state.get("jobname") or os.path.basename(job_dir)
-            self.jobname_entry.delete(0, "end")
-            self.jobname_entry.insert(0, jobname)
 
 
-            self._refresh_after_job_load()
-
-            self.log_output(f"📂 Job loaded: {job_dir}\n")
-            self.log_output(f"ℹ️ Stage: {getattr(self, 'last_completed_stage', None)}\n")
-
-        except Exception as e:
-            self.log_output(f"❌ Load job failed: {e}\n")
-            messagebox.showerror("Load Job", str(e))
-
-    def _refresh_after_job_load(self):
-        """
-        Minimal UI refresh hook.
-        Enable/disable buttons based on what is present.
-        You can expand this as needed.
-        """
-        has_pdb = bool(getattr(self, "pdb_info_dict", None))
-        has_paths = bool(getattr(self, "paths_dict_2", None))
-        has_freq = bool(getattr(self, "all_normalized_frequencies", None))
 
 
-    def _job_state_path(self, jobpath):
-        import os
-        return os.path.join(jobpath, "job_state.pkl")
+        # Example: enable buttons if you have them
+        # self.calc_paths_btn.config(state=("normal" if has_pdb else "disabled"))
+        # self.save_colored_btn.config(state=("normal" if has_freq else "disabled"))
+        # self.show_3d_btn.config(state=("normal" if (has_paths or has_freq) else "disabled"))
 
-    def _save_job_state(self, jobpath):
-        import pickle
-        payload = {
-            "state": getattr(self, "state", {}) or {},
-            "last_completed_stage": getattr(self, "last_completed_stage", None),
-            "pdb_info_dict": getattr(self, "pdb_info_dict", None),
-            "mapping_signature": (getattr(self, "state", {}) or {}).get("mapping_signature"),
-        }
-        with open(self._job_state_path(jobpath), "wb") as f:
-            pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
-        return True
+        # Also restore any listboxes/treeviews if you keep them
+        # e.g., repopulate PDB list widget from self.pdb_info_dict keys.
 
-    def _restore_job_state(self, jobpath):
-        import os, pickle
-        p = self._job_state_path(jobpath)
-        if not os.path.exists(p):
-            return False
-        with open(p, "rb") as f:
-            payload = pickle.load(f) or {}
-
-        # restore basics
-        self.state = payload.get("state") or {}
-        self.last_completed_stage = payload.get("last_completed_stage", None)
-
-        # critical
-        self.pdb_info_dict = payload.get("pdb_info_dict") or {}
-
-        return True
-
-    def _matrices_cache_path(self, jobpath):
-        import os
-        return os.path.join(jobpath, "matrices_cache.npz")
-
-    def _save_matrices_cache(self, jobpath):
-
-        import numpy as np
-
-        payload = {}
-
-        adj = getattr(self, "adjacency_matrices", None)
-        ncm = getattr(self, "net_cost_matrices", None)
-
-
-        if isinstance(adj, dict):
-            for k, v in adj.items():
-                if v is None:
-                    continue
-                payload[f"adj::{str(k)}"] = np.asarray(v)
-        if isinstance(ncm, dict):
-            for k, v in ncm.items():
-                if v is None:
-                    continue
-                payload[f"ncm::{str(k)}"] = np.asarray(v)
-
-        if not payload:
-            return False
-
-        np.savez_compressed(self._matrices_cache_path(jobpath), **payload)
-        return True
-
-    def _restore_matrices_cache(self, jobpath):
-
-        import os
-        import numpy as np
-
-        p = self._matrices_cache_path(jobpath)
-        if not os.path.exists(p):
-            return False
-
-        data = np.load(p, allow_pickle=False)
-
-        adj = {}
-        ncm = {}
-
-        for name in data.files:
-            if name.startswith("adj::"):
-                k = name.split("::", 1)[1]
-                adj[k] = data[name]
-            elif name.startswith("ncm::"):
-                k = name.split("::", 1)[1]
-                ncm[k] = data[name]
-
-        # Restore
-        self.adjacency_matrices = adj
-        self.net_cost_matrices = ncm
-        return True
 
 
 if __name__ == "__main__":

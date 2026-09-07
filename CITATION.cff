@@ -1,0 +1,15 @@
+cff-version: 1.2.0
+title: MUSIKALL
+message: >-
+  If you use MUSIKALL, please cite the software using this metadata and report
+  the MUSIKALL version/build used in your analysis. The preferred journal
+  article citation will be added here when the MUSIKALL publication becomes available.
+type: software
+authors:
+  - given-names: Ö. Zeynep
+    family-names: Güner Yılmaz
+  - given-names: Özge
+    family-names: Kurkcuoğlu
+repository-code: https://github.com/zeynepguneryilmaz/MUSIKALL
+url: https://github.com/zeynepguneryilmaz/MUSIKALL
+license: MIT

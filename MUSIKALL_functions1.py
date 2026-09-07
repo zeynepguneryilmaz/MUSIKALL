@@ -373,7 +373,7 @@ def _base_only(p) -> str:
         if sL.endswith(ext):
             s = s[:-len(ext)]
             break
-    return s  # .53 gibi kısımlar KALIR
+    return s  # suffixes such as .53 are preserved
 
 def _base_key(p) -> str:
     return _base_only(p).lower()
@@ -480,7 +480,7 @@ def _resolve_job_dir(jobname: str) -> str:
     if p.is_absolute():
         p.mkdir(parents=True, exist_ok=True)
         return str(p)
-    # Göreli ise Belgelerim/MUSIKALL Projects altına yaz
+    # Resolve relative job names under Documents/MUSIKALL Projects
     root = get_projects_root() / jobname
     root.mkdir(parents=True, exist_ok=True)
     return str(root)
@@ -495,7 +495,7 @@ def _get_documents_dir() -> Path:
     """
     home = Path.home()
 
-    # Windows / macOS / Linux için en basit ve sağlam yaklaşım:
+    # Simple cross-platform Documents-directory fallback
     docs = home / "Documents"
     if docs.exists():
         return docs
@@ -509,7 +509,7 @@ def get_projects_root() -> Path:
     return root
 
 def create_job_folder(jobname: str) -> str:
-    """Belgelerim/MUSIKALL Projects/jobname klasörü oluştur ve döndür."""
+    """Create and return Documents/MUSIKALL Projects/jobname."""
     job_folder = get_projects_root() / jobname
     job_folder.mkdir(parents=True, exist_ok=True)
     return str(job_folder)
@@ -524,7 +524,7 @@ def remove_hydrogens_from_pdb_file(pdb_path):
                 atom_name = line[12:16].strip()
                 element = line[76:78].strip() if len(line) >= 78 else ""
 
-                # Element kolonu varsa onu kullan; yoksa atom adına bak
+                # Prefer the element column; fall back to the atom name
                 if element.upper() == "H":
                     continue
                 if not element and atom_name.upper().startswith("H"):
@@ -535,7 +535,7 @@ def remove_hydrogens_from_pdb_file(pdb_path):
     with open(pdb_path, "w", encoding="utf-8") as f:
         f.writelines(cleaned_lines)
 
-def load_pdb_files(jobname, file_paths, pdb_info_dict=None, logger=None):
+def _load_pdb_files_legacy_exact(jobname, file_paths, pdb_info_dict=None, logger=None):
 
     if pdb_info_dict is None:
         pdb_info_dict = {}
@@ -557,7 +557,7 @@ def load_pdb_files(jobname, file_paths, pdb_info_dict=None, logger=None):
             # 1) PDB'yi job klasörüne kopyala
             if os.path.abspath(file_path) != os.path.abspath(pdb_target_path):
                 shutil.copy2(file_path, pdb_target_path)
-            remove_hydrogens_from_pdb_file(pdb_target_path)
+
             # 1.5) SEGNAME HARİTASI: PDB satırından oku
             # (chain_id, resseq_int, icode_str_or_None) -> set([segname_str, ...])
             from collections import Counter
@@ -621,6 +621,8 @@ def load_pdb_files(jobname, file_paths, pdb_info_dict=None, logger=None):
             for model in structure:
                 for chain in model:
                     chain_id = chain.get_id()
+                    residue_list = []
+                    residue_chain_map[chain_id] = residue_list
 
                     for residue in chain:
                         hetflag, resseq, icode = residue.id
@@ -676,8 +678,7 @@ def load_pdb_files(jobname, file_paths, pdb_info_dict=None, logger=None):
 
                         }
 
-                        chain_key = f"{primary_seg}:{chain_id}" if primary_seg else chain_id
-                        residue_chain_map.setdefault(chain_key, []).append(res_info)
+                        residue_list.append(res_info)
 
                         # chain + resi sözlükleri
                         std_key = (chain_id, resseq, norm_icode)
@@ -745,15 +746,323 @@ def load_pdb_files(jobname, file_paths, pdb_info_dict=None, logger=None):
 
     return pdb_info_dict
 
+def _load_pdb_files_segaware(jobname, file_paths, pdb_info_dict=None, logger=None):
+    """
+    Load PDB files using one authoritative global-index space for the whole
+    structure while preserving SEGNAME as part of full residue identity.
 
-def calculate_adj_and_edgeweight_matrix(pdb_data, rcutt):
+    Core invariant
+    --------------
+    Every physical residue node is assigned exactly one stable global index in
+    first-appearance order in the PDB ATOM records.  The same ordered residue
+    list is then used by adjacency, KSP, path statistics, and reverse display
+    mapping.
+
+    Identity rules
+    --------------
+    Full identity : (segname, chain, resseq, icode)
+    Simple identity: (chain, resseq, icode), accepted only when unique across
+                     the whole structure.
+
+    This keeps normal proteins convenient (SEGNAME may be omitted when the
+    simple identity is unique) while keeping ribosomes/mixed systems safe when
+    the same chain/residue number occurs in multiple segments.
+    """
+    if pdb_info_dict is None:
+        pdb_info_dict = {}
+
+    job_folder = _resolve_job_dir(jobname)
+    pdb_folder = os.path.join(job_folder, "pdb_files")
+    os.makedirs(pdb_folder, exist_ok=True)
+
+    for file_path in file_paths:
+        pdb_name = os.path.basename(file_path)
+        pdb_id = os.path.splitext(pdb_name)[0]
+        canon = _base_key(pdb_id)
+        pdb_target_path = os.path.join(pdb_folder, pdb_name)
+
+        try:
+            if os.path.abspath(file_path) != os.path.abspath(pdb_target_path):
+                shutil.copy2(file_path, pdb_target_path)
+
+            remove_hydrogens_from_pdb_file(pdb_target_path)
+            structure = get_structure_any(canon, pdb_target_path)
+
+            data = {
+                "file_path": pdb_target_path,
+                "structure": structure,
+                "residue_chain_map": {},
+                "global_residues": [],
+                "global_index_to_residue": {},
+                "residue_to_global_index_strict": {},
+                "residue_to_global_index_simple": {},
+                "edgeweight_matrix": None,
+                "b_factors": {},
+                "residue_dict": {"source_residues": [], "sink_residues": []},
+                "atom_info": {},
+                "residue_atom_count": {},
+                "atom_info_segchain": {},
+                "residue_atom_count_segchain": {},
+            }
+            pdb_info_dict[canon] = data
+
+            # Ordered dict semantics preserve first appearance in the PDB.
+            # Repeated ATOM lines for the same full residue identity append to
+            # the same node without changing its global position.
+            raw_residues = {}
+
+            with open(pdb_target_path, "r", encoding="utf-8", errors="ignore") as fh:
+                for line in fh:
+                    if not line.startswith("ATOM"):
+                        continue
+                    if len(line) < 54:
+                        continue
+
+                    atom_name = line[12:16].strip()
+                    resname = line[17:20].strip()
+                    chain_id = line[21]
+
+                    resseq_s = line[22:26].strip()
+                    if not resseq_s:
+                        continue
+                    try:
+                        resseq = int(resseq_s)
+                    except ValueError:
+                        continue
+
+                    icode = line[26].strip() or None
+                    segname = line[72:76].strip() if len(line) >= 76 else ""
+                    segname = segname or None
+
+                    try:
+                        x = float(line[30:38])
+                        y = float(line[38:46])
+                        z = float(line[46:54])
+                    except ValueError:
+                        continue
+
+                    try:
+                        occupancy = float(line[54:60].strip()) if line[54:60].strip() else 0.0
+                    except Exception:
+                        occupancy = 0.0
+                    try:
+                        bfactor = float(line[60:66].strip()) if line[60:66].strip() else 0.0
+                    except Exception:
+                        bfactor = 0.0
+                    try:
+                        serial = int(line[6:11].strip())
+                    except Exception:
+                        serial = None
+
+                    full_key = (segname, chain_id, resseq, icode)
+                    if full_key not in raw_residues:
+                        raw_residues[full_key] = {
+                            "residue_name": resname,
+                            "atoms": [],
+                            "first_atom_serial": None,
+                            "ca_atom_serial": None,
+                        }
+
+                    rec = raw_residues[full_key]
+                    if serial is not None and rec["first_atom_serial"] is None:
+                        rec["first_atom_serial"] = serial
+                    if serial is not None and atom_name == "CA":
+                        rec["ca_atom_serial"] = serial
+
+                    rec["atoms"].append({
+                        "name": atom_name,
+                        "coord": [x, y, z],
+                        "bfactor": bfactor,
+                        "occupancy": occupancy,
+                    })
+
+            residue_chain_map = data["residue_chain_map"]
+            global_residues = data["global_residues"]
+            strict_map = data["residue_to_global_index_strict"]
+            simple_candidates = {}
+
+            # IMPORTANT: assign indices in first PDB appearance order, not by
+            # sorting SEGNAME/chain keys.  This is the single authoritative
+            # node order used everywhere downstream.
+            for global_index, ((segname, chain_id, resseq, icode), rec) in enumerate(raw_residues.items()):
+                res_info = {
+                    "index": global_index,
+                    "residue_num": resseq,
+                    "residue_name": rec["residue_name"],
+                    "atoms": rec["atoms"],
+                    "chain": chain_id,
+                    "segname": segname,
+                    "all_segnames": [segname] if segname else [],
+                    "icode": icode,
+                    "first_atom_serial": rec["first_atom_serial"],
+                    "ca_atom_serial": rec["ca_atom_serial"],
+                }
+                global_residues.append(res_info)
+
+                # Legacy/grouped view is retained for callers that need chain
+                # buckets, but it no longer defines the matrix/index order.
+                chain_key = f"{segname}:{chain_id}" if segname else chain_id
+                residue_chain_map.setdefault(chain_key, []).append(res_info)
+
+                full_id = (segname, chain_id, int(resseq), icode)
+                strict_map[full_id] = global_index
+
+                simple_id = (chain_id, int(resseq), icode)
+                simple_candidates.setdefault(simple_id, []).append(global_index)
+                # no-icode form is useful only if globally unique
+                simple_noic = (chain_id, int(resseq), None)
+                simple_candidates.setdefault(simple_noic, []).append(global_index)
+
+                data["global_index_to_residue"][global_index] = {
+                    "segname": segname,
+                    "chain": chain_id,
+                    "residue_num": int(resseq),
+                    "icode": icode,
+                    "residue_name": str(rec["residue_name"]).strip().upper(),
+                }
+
+                std_key = (chain_id, int(resseq), icode)
+                # Legacy chain-only atom dictionaries are best-effort.  Do not
+                # use them to resolve ambiguous full residue identities.
+                if std_key not in data["residue_atom_count"]:
+                    data["residue_atom_count"][std_key] = len(rec["atoms"])
+                    data["atom_info"][std_key] = rec["atoms"]
+
+                seg_key = (segname, chain_id, int(resseq), icode)
+                data["residue_atom_count_segchain"][seg_key] = len(rec["atoms"])
+                data["atom_info_segchain"][seg_key] = rec["atoms"]
+
+            data["residue_to_global_index_simple"] = {
+                key: vals[0] if len(set(vals)) == 1 else None
+                for key, vals in simple_candidates.items()
+            }
+
+            # Human-readable summary remains grouped by SEGNAME:chain.
+            chain_details = []
+            for chain_key, residues in residue_chain_map.items():
+                segs = sorted({
+                    str(r.get("segname")).strip()
+                    for r in residues
+                    if r.get("segname")
+                })
+                if segs:
+                    chain_details.append(
+                        f"   • {chain_key} (segname(s)={', '.join(segs)}): {len(residues)} residues"
+                    )
+                else:
+                    chain_details.append(f"   • {chain_key}: {len(residues)} residues")
+
+            _log(logger,
+                 f"✅ {pdb_name} was processed and saved to:\n"
+                 f"   {pdb_target_path}\n"
+                 f"📌 Chains read:\n")
+            for line in chain_details:
+                _log(logger, line + "\n")
+            _log(logger, f"📌 Total nodes (standard residues): {len(global_residues)}\n")
+
+        except Exception as e:
+            _log(logger, f"❌ Error loading {pdb_name}: {e}\n")
+
+    return pdb_info_dict
+
+
+def _pdb_has_true_segname_collision(file_path):
+    """
+    Return True only when the same (chain, resseq, icode) occurs under more than
+    one non-empty SEGNAME in ATOM records.
+
+    This is the condition that requires SEGNAME to become part of node identity.
+    Ordinary proteins with a single SEGNAME per residue stay on the historical
+    MUSIKALL node/index pipeline so established benchmark results are preserved.
+    """
+    seen = {}
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                if not line.startswith("ATOM"):
+                    continue
+                if len(line) < 27:
+                    continue
+                ch = line[21]
+                rs = line[22:26].strip()
+                if not rs:
+                    continue
+                try:
+                    rn = int(rs)
+                except Exception:
+                    continue
+                ic = line[26].strip() or None
+                seg = line[72:76].strip() if len(line) >= 76 else ""
+                if not seg:
+                    continue
+                seen.setdefault((ch, rn, ic), set()).add(seg)
+        return any(len(v) > 1 for v in seen.values())
+    except Exception:
+        return False
+
+
+def load_pdb_files(jobname, file_paths, pdb_info_dict=None, logger=None):
+    """
+    Compatibility-preserving loader.
+
+    - Normal structures: use the historical MUSIKALL loader exactly, preserving
+      the established global-index/node behavior and benchmark outputs.
+    - Structures with real SEGNAME collisions: use the SEGNAME-aware loader so
+      physically distinct residues are not collapsed.
+
+    A per-structure flag records which node-identity mode was used.
+    """
+    if pdb_info_dict is None:
+        pdb_info_dict = {}
+
+    for fp in (file_paths or []):
+        use_segaware = _pdb_has_true_segname_collision(fp)
+        before = set(pdb_info_dict.keys())
+
+        if use_segaware:
+            _load_pdb_files_segaware(
+                jobname, [fp], pdb_info_dict=pdb_info_dict, logger=logger
+            )
+        else:
+            _load_pdb_files_legacy_exact(
+                jobname, [fp], pdb_info_dict=pdb_info_dict, logger=logger
+            )
+
+        after = [k for k in pdb_info_dict.keys() if k not in before]
+        if not after:
+            # Existing/reused key fallback.
+            key = _base_key(os.path.splitext(os.path.basename(fp))[0])
+            after = [key] if key in pdb_info_dict else []
+
+        for key in after:
+            if key not in pdb_info_dict:
+                continue
+            pdb_info_dict[key]["_segname_collision_mode"] = bool(use_segaware)
+            pdb_info_dict[key]["_node_index_policy"] = (
+                "segname_aware_full_identity"
+                if use_segaware
+                else "legacy_exact"
+            )
+
+            if logger is not None:
+                _log(
+                    logger,
+                    "📌 Node/index mode: "
+                    + ("SEGNAME-aware (true identity collision detected).\n"
+                       if use_segaware
+                       else "legacy-compatible (no true SEGNAME collision).\n")
+                )
+
+    return pdb_info_dict
+
+def _calculate_adj_and_edgeweight_matrix_legacy_exact(pdb_data, rcutt):
     """
     Fast contact-based adjacency and cost matrices (residue = node).
 
     For each residue i and j, counts the number of atom-atom contacts within
     distance rcutt using KDTree:
         Nij = # of atom pairs within rcutt
-        aij = Nij/sqrt(Ni*Nj)
+        aij = aij = Nij / np.sqrt(Ni * Nj)
         edgeweight = 1/(aij + 1e-6)
 
     IMPORTANT:
@@ -847,7 +1156,96 @@ def calculate_adj_and_edgeweight_matrix(pdb_data, rcutt):
             Nij = tree_i.count_neighbors(tree_j, rcutt)
 
             if Nij > 0:
-                aij = Nij / np.sqrt((Ni * Nj))
+                aij = Nij / np.sqrt(Ni * Nj)
+                adj_matrix[i, j] = aij
+                adj_matrix[j, i] = aij
+
+                w = 1.0 / (aij + 1e-6)
+                edgeweight_matrix[i, j] = w
+                edgeweight_matrix[j, i] = w
+
+    return adj_matrix, edgeweight_matrix, node_index_map
+
+def _calculate_adj_and_edgeweight_matrix_segaware(pdb_data, rcutt):
+    """
+    Contact-based adjacency and edge-cost matrices in the authoritative global
+    index space.
+
+    The matrix row/column i always represents global residue index i.  No
+    independent sorting or re-numbering is allowed here.
+    """
+    # Preferred authoritative list created by load_pdb_files().
+    residues = list((pdb_data or {}).get("global_residues", []) or [])
+
+    if residues:
+        residues = sorted(residues, key=lambda r: int(r.get("index", 10**18)))
+    else:
+        # Backward-compatible fallback for older in-memory jobs/files.
+        rcm = (pdb_data or {}).get("residue_chain_map", {}) or {}
+        tmp = []
+        for ch_key, lst in rcm.items():
+            for r in (lst or []):
+                tmp.append(r)
+        # Existing index metadata, when present, is authoritative.
+        if tmp and all(r.get("index") is not None for r in tmp):
+            residues = sorted(tmp, key=lambda r: int(r.get("index")))
+        else:
+            residues = tmp
+
+    R = len(residues)
+    node_index_map = {}
+
+    for expected_i, res in enumerate(residues):
+        gi = res.get("index", expected_i)
+        try:
+            gi = int(gi)
+        except Exception:
+            gi = expected_i
+        if gi != expected_i:
+            raise ValueError(
+                f"Non-contiguous global index space: expected {expected_i}, found {gi}."
+            )
+
+        chain = str(res.get("chain") or "?").strip() or "?"
+        seg = str(res.get("segname") or "").strip()
+        rn = int(res.get("residue_num"))
+        ic = res.get("icode")
+        ic_suffix = str(ic).strip() if ic not in (None, "", " ") else ""
+        node_index_map[gi] = (
+            f"{seg}:{chain}:{rn}{ic_suffix}" if seg
+            else f"{chain}:{rn}{ic_suffix}"
+        )
+
+    adj_matrix = np.zeros((R, R), dtype=float)
+    edgeweight_matrix = np.zeros((R, R), dtype=float)
+
+    residue_coords = []
+    residue_trees = []
+    for res in residues:
+        atoms = res.get("atoms", []) or []
+        coords = np.array([a["coord"] for a in atoms if "coord" in a], dtype=float)
+        if coords.size == 0:
+            residue_coords.append(coords)
+            residue_trees.append(None)
+        else:
+            residue_coords.append(coords)
+            residue_trees.append(cKDTree(coords))
+
+    for i in range(R):
+        tree_i = residue_trees[i]
+        Ni = len(residue_coords[i])
+        if Ni == 0 or tree_i is None:
+            continue
+
+        for j in range(i + 1, R):
+            tree_j = residue_trees[j]
+            Nj = len(residue_coords[j])
+            if Nj == 0 or tree_j is None:
+                continue
+
+            Nij = tree_i.count_neighbors(tree_j, rcutt)
+            if Nij > 0:
+                aij = Nij / np.sqrt(Ni * Nj)
                 adj_matrix[i, j] = aij
                 adj_matrix[j, i] = aij
 
@@ -858,17 +1256,39 @@ def calculate_adj_and_edgeweight_matrix(pdb_data, rcutt):
     return adj_matrix, edgeweight_matrix, node_index_map
 
 
+def calculate_adj_and_edgeweight_matrix(pdb_data, rcutt):
+    """
+    Dispatch adjacency construction according to the node/index mode selected at
+    load time.  Scientific contact and edge-cost formulas are unchanged.
+    """
+    if bool((pdb_data or {}).get("_segname_collision_mode", False)):
+        return _calculate_adj_and_edgeweight_matrix_segaware(pdb_data, rcutt)
+    return _calculate_adj_and_edgeweight_matrix_legacy_exact(pdb_data, rcutt)
+
 def save_matrix_to_file(matrix, filename):
     """
-    Matrisi bir `.txt` dosyasına kaydeder.
-    """
+    Save only non-zero matrix entries.
 
-    np.savetxt(filename, matrix, fmt='%.6f')
+    Format:
+        row_index    column_index    value
+
+    Matrix calculation itself is NOT modified.
+    """
+    matrix = np.asarray(matrix)
+
+    rows, cols = np.nonzero(matrix)
+
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(f"# shape {matrix.shape[0]} {matrix.shape[1]}\n")
+        f.write("# row_index\tcolumn_index\tvalue\n")
+
+        for i, j in zip(rows, cols):
+            f.write(f"{i}\t{j}\t{matrix[i, j]:.6f}\n")
 
 
 def get_filename_without_extension(filepath):
     """
-    Dosya adını uzantısı olmadan döndürür.
+    Return the filename without its extension.
     """
     return os.path.splitext(os.path.basename(filepath))[0]
 
@@ -1117,19 +1537,19 @@ def ensure_reference_in_dict(jobname, pdb_info_dict, reference_pdb_path, gui=Non
 
 def parse_residue_input(text, gui=None, logger=None):
     """
-    Kullanıcı input'unu source/sink için parse eder.
+    Parse source/sink residue input from the GUI.
 
-    Beklenen formatlar:
+    Accepted formats:
       - "CHAIN,RES"                  ->  DA,1047
       - "CHAIN,START-END"           ->  DA,1047-1050
       - "SEGNAME:CHAIN,RES"         ->  MC:DA,1047
       - "SEGNAME:CHAIN,START-END"   ->  MC:DA,1047-1050
 
-    Birden fazla giriş:
+    Multiple entries:
       - "MC:DA,1047-1050; MC:DA,2000"
-      - satır satır da yazılabilir.
+      - entries may also be provided on separate lines.
 
-    Dönen liste elemanları:
+    Returned list elements:
       { 'chain': 'DA', 'residue_num': 1047, 'segname': 'MC' (veya None) }
     """
     if not text:
@@ -1137,7 +1557,7 @@ def parse_residue_input(text, gui=None, logger=None):
 
     residues = []
 
-    # ; veya yeni satıra göre tokenize et
+    # Tokenize on semicolons or new lines
     tokens = re.split(r"[;\n]+", text)
     for token in tokens:
         chunk = token.strip()
@@ -1145,7 +1565,7 @@ def parse_residue_input(text, gui=None, logger=None):
             continue
 
         try:
-            # "SEG:CHAIN,..." ya da "CHAIN,..." kısmını ayır
+            # Split the SEG:CHAIN or CHAIN portion from the residue specification
             segment = None
             chain_segment_part = chunk
             residue_part = ""
@@ -1167,7 +1587,7 @@ def parse_residue_input(text, gui=None, logger=None):
             resnums = []
 
             if residue_part:
-                # aralık mı, tek tek mi?
+                # Parse ranges or individual residue numbers
                 for part in residue_part.split(","):
                     p = part.strip()
                     if not p:
@@ -1183,7 +1603,7 @@ def parse_residue_input(text, gui=None, logger=None):
                     else:
                         resnums.append(int(p))
             else:
-                # Sadece "CHAIN" veya "SEG:CHAIN" yazılmışsa şimdilik hata verelim
+                # Require at least one residue number
                 raise ValueError("No residue numbers given")
 
             for rn in resnums:
@@ -1200,7 +1620,7 @@ def parse_residue_input(text, gui=None, logger=None):
             if gui:
                 _log(logger,f"⚠ Residue input parse error in '{token}': {e}\n")
 
-    # 🔍 DEBUG: parse sonucu özet
+    # DEBUG: summarize parsed residue input
     if gui:
         if residues:
             _log(logger,
@@ -1353,89 +1773,76 @@ def _best_chain_match(ref_prof, tgt_prof, min_len=20, max_pairs=2500):
 
 def _alignment_index_map(ref_seq, tgt_seq):
     """
-    Align ref_seq vs tgt_seq and return list of matched indices:
-      [(i_ref, i_tgt), ...] for positions where both are not gaps.
+    Align ref_seq vs tgt_seq and return ALL aligned residue-index pairs:
+        [(i_ref, i_tgt), ...]
+
+    Uses Bio.Align.Alignment.aligned blocks directly.
+    This is robust for long ribosomal sequences; it does not parse the
+    truncated human-readable alignment text.
     """
     from Bio.Align import PairwiseAligner
 
+    ref_seq = ref_seq or ""
+    tgt_seq = tgt_seq or ""
+
+    if not ref_seq or not tgt_seq:
+        return []
+
     aligner = PairwiseAligner()
     aligner.mode = "global"
-
-    try:
-        aligner.algorithm = "Myers"
-    except Exception:
-        pass
-
     aligner.match_score = 2
     aligner.mismatch_score = -1
     aligner.open_gap_score = -2
     aligner.extend_gap_score = -0.5
 
-    # ✅ combinatorial patlamayı azalt
     try:
         aligner.max_number_of_alignments = 1
     except Exception:
         pass
 
     alns = aligner.align(ref_seq, tgt_seq)
-    a = next(iter(alns), None)
-    if a is None:
+    aln = next(iter(alns), None)
+    if aln is None:
         return []
 
-    # ✅ Biopython sürümlerinde seqA/seqB yok → format() üzerinden gapped stringleri çek
-    ref_aln = None
-    tgt_aln = None
-    try:
-        fmt = a.format()
-    except Exception:
-        fmt = str(a)
-
-    lines = [ln.rstrip("\n") for ln in fmt.splitlines() if ln.strip()]
-    # PairwiseAligner çıktısında tipik olarak:
-    # target  <start>  <gapped_seq>  <end>
-    # query   <start>  <gapped_seq>  <end>
-    for ln in lines:
-        s = ln.strip()
-        low = s.lower()
-        if low.startswith("target"):
-            parts = s.split()
-            if len(parts) >= 3:
-                ref_aln = parts[2]
-        elif low.startswith("query"):
-            parts = s.split()
-            if len(parts) >= 3:
-                tgt_aln = parts[2]
-
-        if ref_aln and tgt_aln:
-            break
-
-    # Ek fallback: target/query parse edilemezse, en azından '-' içeren iki satırı al
-    if not (ref_aln and tgt_aln):
-        cand = []
-        for ln in lines:
-            ss = ln.strip()
-            # çok kaba ama pratik: gap/harf içeren satırları yakala
-            if "-" in ss and any(ch.isalpha() for ch in ss):
-                cand.append(ss.split()[-1] if ss.split() else ss)
-        if len(cand) >= 2:
-            ref_aln, tgt_aln = cand[0], cand[1]
-
-    if not (ref_aln and tgt_aln):
-        return []
-
-    # ✅ senin eski index-pair mantığını aynen koruyoruz
     pairs = []
-    i_ref = 0
-    i_tgt = 0
-    for rch, tch in zip(ref_aln, tgt_aln):
-        if rch != "-" and tch != "-":
-            pairs.append((i_ref, i_tgt))
-        if rch != "-":
-            i_ref += 1
-        if tch != "-":
-            i_tgt += 1
-    return pairs
 
+    try:
+        ref_blocks, tgt_blocks = aln.aligned
+
+        for (r0, r1), (t0, t1) in zip(ref_blocks, tgt_blocks):
+            r0, r1 = int(r0), int(r1)
+            t0, t1 = int(t0), int(t1)
+
+            block_len = min(r1 - r0, t1 - t0)
+            if block_len <= 0:
+                continue
+
+            for off in range(block_len):
+                pairs.append((r0 + off, t0 + off))
+
+        return pairs
+
+    except Exception:
+        # Defensive fallback for unusual BioPython versions.
+        # Use coordinates if available; still avoid parsing formatted text.
+        try:
+            coords = aln.coordinates
+            for k in range(coords.shape[1] - 1):
+                r0, r1 = int(coords[0, k]), int(coords[0, k + 1])
+                t0, t1 = int(coords[1, k]), int(coords[1, k + 1])
+
+                dr = r1 - r0
+                dt = t1 - t0
+
+                if dr > 0 and dt > 0:
+                    block_len = min(dr, dt)
+                    for off in range(block_len):
+                        pairs.append((r0 + off, t0 + off))
+
+            return pairs
+        except Exception:
+            return []
 
 def align_structures(ref_structure, target_structure, gui=None,
                      min_anchor_atoms=30, min_chain_len=20,
@@ -1544,7 +1951,7 @@ def _build_seg_profiles_from_rcm(pdb_data):
     prof = {}
 
     def _one_letter(resn3):
-        # protein+NA için basit map (senin projede zaten benzeri var; yoksa minimal bırak)
+        # Minimal one-letter mapping for proteins and nucleic acids
         aa = {
             "ALA":"A","CYS":"C","ASP":"D","GLU":"E","PHE":"F","GLY":"G","HIS":"H","ILE":"I","LYS":"K",
             "LEU":"L","MET":"M","ASN":"N","PRO":"P","GLN":"Q","ARG":"R","SER":"S","THR":"T","VAL":"V",
@@ -1554,9 +1961,9 @@ def _build_seg_profiles_from_rcm(pdb_data):
         r = (resn3 or "").strip().upper()
         return aa.get(r) or na.get(r) or "X"
 
-    for ch, lst in rcm.items():
-        ch = str(ch).strip()
+    for ch_key, lst in rcm.items():
         for r in (lst or []):
+            ch = _real_chain_from_residue(r, ch_key)
             gi = r.get("index")
             rn = r.get("residue_num")
             ic = (r.get("icode") or None)
@@ -1600,32 +2007,55 @@ def _kmer_set(s, k=3):
 
 def _best_seg_match(ref_seg_seq, tgt_seg_profiles, chain, topn=3, k=3):
     """
-    tgt_seg_profiles: dict[(chain, seg)] -> {"seq":..., ...}
-    Return best target seg for the given chain.
+    Return the best target SEGNAME on the same real chain.
+
+    Normal segments:
+      k-mer/Jaccard pre-ranking -> sequence-alignment refinement.
+
+    Very short segments (< k):
+      direct sequence-alignment comparison, because k-mer ranking cannot work.
     """
-    ref_k = _kmer_set(ref_seg_seq, k=k)
-    if not ref_k:
+    ref_seg_seq = ref_seg_seq or ""
+
+    same_chain = [
+        (seg, e)
+        for (ch, seg), e in (tgt_seg_profiles or {}).items()
+        if ch == chain and (e or {}).get("seq")
+    ]
+
+    if not same_chain or not ref_seg_seq:
         return None
 
-    # 1) fast rank by Jaccard
-    scored = []
-    for (ch, seg), e in tgt_seg_profiles.items():
-        if ch != chain:
-            continue
-        tk = _kmer_set(e["seq"], k=k)
-        if not tk:
-            continue
-        inter = len(ref_k & tk)
-        union = len(ref_k | tk)
-        j = inter / union if union else 0.0
-        scored.append((j, seg))
+    ref_k = _kmer_set(ref_seg_seq, k=k)
 
-    scored.sort(reverse=True, key=lambda x: x[0])
-    cand = [seg for _, seg in scored[:max(1, topn)]]
+    if ref_k:
+        scored = []
+
+        for seg, e in same_chain:
+            ts = (e or {}).get("seq", "")
+            tk = _kmer_set(ts, k=k)
+            if not tk:
+                continue
+
+            inter = len(ref_k & tk)
+            union = len(ref_k | tk)
+            jaccard = inter / union if union else 0.0
+
+            # Small length-consistency term helps avoid tiny unrelated segments.
+            len_ratio = min(len(ref_seg_seq), len(ts)) / max(len(ref_seg_seq), len(ts))
+            score0 = jaccard + 0.10 * len_ratio
+
+            scored.append((score0, seg))
+
+        scored.sort(reverse=True, key=lambda x: x[0])
+        cand = [seg for _, seg in scored[:max(1, int(topn))]]
+
+    else:
+        cand = [seg for seg, _e in same_chain]
+
     if not cand:
         return None
 
-    # 2) refine using real alignment only on candidates
     from Bio.Align import PairwiseAligner
     aligner = PairwiseAligner()
     aligner.mode = "global"
@@ -1633,28 +2063,33 @@ def _best_seg_match(ref_seg_seq, tgt_seg_profiles, chain, topn=3, k=3):
     aligner.mismatch_score = -1
     aligner.open_gap_score = -2
     aligner.extend_gap_score = -0.5
-    # mümkünse tek alignment ile sınırla (patlamayı azaltır)
+
     try:
         aligner.max_number_of_alignments = 1
     except Exception:
         pass
 
-    best = (float("-inf"), None)
+    best_score = float("-inf")
+    best_seg = None
+
     for seg in cand:
-        ts = tgt_seg_profiles[(chain, seg)]["seq"]
-        alns = aligner.align(ref_seg_seq, ts)
-
-
-        aln0 = next(iter(alns), None)
-        if aln0 is None:
+        ts = (tgt_seg_profiles.get((chain, seg), {}) or {}).get("seq", "")
+        if not ts:
             continue
 
-        sc = float(aln0.score)
-        if sc > best[0]:
-            best = (sc, seg)
+        aln = next(iter(aligner.align(ref_seg_seq, ts)), None)
+        if aln is None:
+            continue
 
-    return best[1]
+        # Normalize by longer sequence length so large/small segments are comparable.
+        denom = max(1, len(ref_seg_seq), len(ts))
+        score = float(aln.score) / float(denom)
 
+        if score > best_score:
+            best_score = score
+            best_seg = seg
+
+    return best_seg
 
 def _map_ref_res_to_target_index_large(ref_res, ref_data, tgt_data):
     """
@@ -1667,27 +2102,44 @@ def _map_ref_res_to_target_index_large(ref_res, ref_data, tgt_data):
         return None
     ric = (str(ref_res.get("icode")).strip() or None) if ref_res.get("icode") is not None else None
 
-    # ref seg: kullanıcı girdisi varsa onu al; yoksa ref rcm'den bul
+    # Use the input reference SEGNAME when provided; otherwise resolve it from the reference residue map
     ref_seg = ref_res.get("segname")
     ref_seg = str(ref_seg).strip() if ref_seg else None
     if ref_seg is None:
-        # ref rcm'den (chain,resnum,icode) -> segname bul
-        # senin already-existing _build_target_meta_lookup benzeri bir lookup burada da kullanılabilir
         rcm = (ref_data or {}).get("residue_chain_map", {}) or {}
-        found = None
-        for r in (rcm.get(rch) or []):
-            if int(r.get("residue_num", -1)) != rrn:
-                continue
-            ic = r.get("icode") or None
-            if ric is not None and (ic != ric):
-                continue
-            found = r
-            break
-        if found:
-            # primary seg
-            ref_seg = (found.get("segname") or None)
-            ref_seg = str(ref_seg).strip() if ref_seg else None
+        candidates = []
 
+        for ch_key, residues in rcm.items():
+            for r in (residues or []):
+                if _real_chain_from_residue(r, ch_key) != rch:
+                    continue
+
+                try:
+                    if int(r.get("residue_num", -1)) != rrn:
+                        continue
+                except Exception:
+                    continue
+
+                ic = r.get("icode") or None
+                if ric is not None and ic != ric:
+                    continue
+
+                candidates.append(r)
+
+        uniq_by_idx = {}
+        for r in candidates:
+            try:
+                uniq_by_idx[int(r.get("index"))] = r
+            except Exception:
+                pass
+
+        if len(uniq_by_idx) == 1:
+            found = next(iter(uniq_by_idx.values()))
+            ref_seg = _primary_seg_from_residue(found)
+        elif len(uniq_by_idx) > 1:
+            # CHAIN+RESNUM is ambiguous across SEGNAMEs.
+            # The user must specify SEGNAME to select one safely.
+            return None
     # seg profilleri
     ref_prof = _build_seg_profiles_from_rcm(ref_data)
     tgt_prof = _build_seg_profiles_from_rcm(tgt_data)
@@ -1702,12 +2154,12 @@ def _map_ref_res_to_target_index_large(ref_res, ref_data, tgt_data):
     if tgt_seg is None or (rch, tgt_seg) not in tgt_prof:
         return None
 
-    # segment içi alignment index map
+    # Alignment index map within the segment
     pairs = _alignment_index_map(ref_seq, tgt_prof[(rch, tgt_seg)]["seq"])
     if not pairs:
         return None
 
-    # ref segment içinde rrn'nin indexini bul
+    # Locate the reference residue position within the segment
     ref_meta = ref_prof[(rch, ref_seg)]["res_meta"]  # [(rn,icode,gi), ...]
     tgt_meta = tgt_prof[(rch, tgt_seg)]["res_meta"]
 
@@ -2014,46 +2466,41 @@ def process_residue_info_and_alignments(jobname, pdb_info_dict,
             ref_seg = _norm_seg(ref_res.get("segname"))  # ref’te seg olabilir/olmayabilir
             ref_ic = _norm_icode(ref_res.get("icode"))
 
-            # Range tabanlı seg tespiti: olabilir de olmayabilir de
+            # Optional range-based SEGNAME inference
             target_seg_by_range = _find_target_seg_by_range(ch, rn)
 
-            # Seg adayları:
-            # 1) ref seg (varsa)
-            # 2) range seg (varsa)
-            # 3) None (segname yoksa “normal” yol)
-            seg_candidates = []
-            if ref_seg is not None:
-                seg_candidates.append(ref_seg)
-            if target_seg_by_range is not None and target_seg_by_range not in seg_candidates:
-                seg_candidates.append(target_seg_by_range)
-            seg_candidates.append(None)
-
-            # icode adayları:
-            # ref_ic varsa önce onu dene, sonra None
+            # insertion-code candidates:
+            # Try the reference insertion code first, then the no-code fallback
             ic_candidates = []
             if ref_ic is not None:
                 ic_candidates.append(ref_ic)
             ic_candidates.append(None)
 
-            # Index çöz: seg-aware + fallback
+            # SEGNAME is optional:
+            #   explicit SEGNAME -> strict SEGNAME-aware lookup
+            #   no SEGNAME       -> CHAIN+RESNUM(+ICODE) lookup, only if unique
+            # Ambiguous chain-only keys are stored as None in idx_map.
             gi = None
             chosen_seg = None
             chosen_ic = None
 
-            for sg_try in seg_candidates:
+            if ref_seg is not None:
                 for ic_try in ic_candidates:
-                    gi = idx_map.get((sg_try, ch, rn, ic_try))
+                    gi = idx_map.get((ref_seg, ch, rn, ic_try))
                     if gi is not None:
-                        chosen_seg = sg_try
+                        chosen_seg = ref_seg
                         chosen_ic = ic_try
                         break
-                if gi is not None:
-                    break
-
+            else:
+                for ic_try in ic_candidates:
+                    gi = idx_map.get((ch, rn, ic_try))
+                    if gi is not None:
+                        chosen_ic = ic_try
+                        break
             if gi is None:
                 return None
 
-            # Meta (hedefin gerçek residue adı/seg’i buradan alınmalı)
+            # Read the target residue metadata from the resolved index
             meta = idx_to_meta.get(gi, {}) or {}
 
             tgt_resname = meta.get("residue_name")
@@ -2064,7 +2511,7 @@ def process_residue_info_and_alignments(jobname, pdb_info_dict,
             if not ref_resname or str(ref_resname).strip() == "":
                 ref_resname = tgt_resname
 
-            # Target segname: öncelik meta’dan; yoksa seçilen seg; yoksa range
+            # Target SEGNAME priority: metadata, resolved candidate, then range inference
             target_seg = (
                     _norm_seg(meta.get("segname"))
                     or _norm_seg((meta.get("all_segnames") or [None])[0])
@@ -2086,7 +2533,7 @@ def process_residue_info_and_alignments(jobname, pdb_info_dict,
                 "target_index": gi,
                 "rmsd": None,
 
-                # debug: range ile bulunan seg + gerçekten index’i çözerken kullanılan seg/icode
+                # Debug fields for inferred and actually used SEGNAME/insertion code
                 "target_segname_by_range": target_seg_by_range,
                 "target_segname_used_for_index": chosen_seg,
                 "target_icode_used_for_index": chosen_ic,
@@ -2099,12 +2546,108 @@ def process_residue_info_and_alignments(jobname, pdb_info_dict,
 
             return out
 
-        for kind, residue_list in [('source_matches', source_residues),
-                                   ('sink_matches',   sink_residues)]:
-            for ref_res in residue_list or []:
-                m = _direct_match_one(ref_res)
-                if m:
+        # ------------------------------------------------------------------
+        # Reference → target residue projection
+        # Large systems (ribosome): SEG-aware sequence projection.
+        # Small systems: existing direct mapping is preserved as fallback.
+        # ------------------------------------------------------------------
+
+        is_large_system = False
+
+        try:
+            ref_rcm = (ref_data or {}).get("residue_chain_map", {}) or {}
+            tgt_rcm = (data or {}).get("residue_chain_map", {}) or {}
+
+            ref_n = sum(len(v or []) for v in ref_rcm.values())
+            tgt_n = sum(len(v or []) for v in tgt_rcm.values())
+
+            is_large_system = (ref_n > 4000 or tgt_n > 4000)
+
+        except Exception:
+            is_large_system = False
+
+        for kind, residue_list in [
+            ("source_matches", source_residues),
+            ("sink_matches", sink_residues),
+        ]:
+
+            for ref_res in (residue_list or []):
+
+                m = None
+
+                # ==========================================================
+                # LARGE SYSTEM / RIBOSOME
+                # Project the REFERENCE residue to the TARGET structure.
+                # Do NOT assume identical residue numbering.
+                # ==========================================================
+                if is_large_system and ref_data is not None:
+
+                    gi = _map_ref_res_to_target_index_large(
+                        ref_res,
+                        ref_data,
+                        data
+                    )
+
+                    if gi is not None:
+                        meta = idx_to_meta.get(int(gi), {}) or {}
+
+                        ref_seg = _norm_seg(ref_res.get("segname"))
+                        ref_ic = _norm_icode(ref_res.get("icode"))
+
+                        target_seg = _norm_seg(meta.get("segname"))
+
+                        if target_seg is None:
+                            all_target_segs = meta.get("all_segnames") or []
+                            if all_target_segs:
+                                target_seg = _norm_seg(all_target_segs[0])
+
+                        m = {
+                            "ref_chain": ref_res.get("chain"),
+                            "ref_residue_num": ref_res.get("residue_num"),
+                            "ref_residue_name": ref_res.get("residue_name", "UNK"),
+                            "ref_segname": ref_seg,
+
+                            "target_chain": meta.get("chain"),
+                            "target_residue_num": meta.get("residue_num"),
+                            "target_residue_name": meta.get(
+                                "residue_name",
+                                "UNK"
+                            ),
+                            "target_segname": target_seg,
+
+                            "target_index": int(gi),
+                            "rmsd": None,
+                        }
+
+                        if ref_ic is not None:
+                            m["ref_icode"] = ref_ic
+
+                        if meta.get("icode"):
+                            m["target_icode"] = _norm_icode(
+                                meta.get("icode")
+                            )
+
+                # ==========================================================
+                # Normal/small systems:
+                # keep the existing behavior to avoid changing working cases.
+                # ==========================================================
+                else:
+                    m = _direct_match_one(ref_res)
+
+                if m is not None:
                     matches[kind].append(m)
+                else:
+                    seg_txt = ref_res.get("segname")
+                    chain_txt = ref_res.get("chain")
+                    rn_txt = ref_res.get("residue_num")
+
+                    _log(
+                        logger,
+                        "⚠ Reference residue could not be projected to "
+                        f"{pdb_id}: "
+                        f"{(str(seg_txt) + ':') if seg_txt else ''}"
+                        f"{chain_txt}:{rn_txt}\n"
+                    )
 
         result_dict[pdb_id] = matches
 
@@ -2206,118 +2749,145 @@ def write_results_to_excel(jobname, results, reference_residues):
     print(f"✅ Results saved to {output_file}")
 
 
-def run_residue_mapping(jobname, pdb_info_dict, reference_pdb_path, source_residues, sink_residues, gui,logger=None):
+def run_residue_mapping(jobname, pdb_info_dict, reference_pdb_path,
+                        source_residues, sink_residues, gui, logger=None):
     """
-    Maps residue indices/numbers of each PDB to a common reference and writes results.
+    Reference-based residue mapping.
 
-    Key fix (ribosome/segname-safe):
-    - Reference seeding does NOT rely on searching the Bio.PDB structure by chain/resnum,
-      because ribosome PDBs can use "chain IDs" differently (e.g., DA) and segname carries
-      the biological subunit identity.
-    - Instead, we seed the reference source/sink indices directly from
-      pdb_info_dict[ref_id]['residue_chain_map'] (segname-aware).
+    GUI source/sink selections always belong to the selected reference PDB.
+    They are resolved exactly in that reference first, then the resolved
+    reference residues are projected to all other PDBs using the existing
+    alignment/projection functions.
     """
 
-    # Ensure reference PDB is present in pdb_info_dict and get its key
-    ref_id = ensure_reference_in_dict(jobname, pdb_info_dict, reference_pdb_path, gui, logger=logger)
+    ref_id = ensure_reference_in_dict(
+        jobname, pdb_info_dict, reference_pdb_path, gui, logger=logger
+    )
 
+    ref_data = pdb_info_dict.get(ref_id, {}) or {}
+    rcm = ref_data.get("residue_chain_map", {}) or {}
 
-    # Parse reference structure (still used by downstream alignment/mapping code)
-    parser = PDBParser(QUIET=True)
-    ref_structure = parser.get_structure(ref_id, pdb_info_dict[ref_id]["file_path"])
+    gui.reference_residues = []
 
-    # -------------------------------------------------------------------------
-    # --- NEW: robust ref seeding via residue_chain_map (segname-aware) ---
-    # -------------------------------------------------------------------------
-    if not getattr(gui, "reference_residues", None):
-        ref_data = pdb_info_dict.get(ref_id, {}) or {}
-        rcm = ref_data.get("residue_chain_map", {}) or {}
+    def _norm_seg_local(x):
+        if x in (None, "", " "):
+            return None
+        return str(x).strip()
 
-        # Build lookup maps from residue_chain_map
-        idxmap_simple = {}  # (chain, resnum) -> global index
-        idxmap_seg = {}     # (segname, chain, resnum) -> global index
-        namemap = {}        # (global index) -> residue_name (for Excel)
+    def _norm_ic_local(x):
+        if x in (None, "", " "):
+            return None
+        return str(x).strip()
 
-        for ch, lst in rcm.items():
-            ch = str(ch).strip()
-            for r in (lst or []):
-                gi = r.get("index")
-                rn = r.get("residue_num")
-                if gi is None or rn is None:
+    def _push_reference(ref_rec, label):
+        ch_in = ref_rec.get("chain")
+        rn_in = ref_rec.get("residue_num")
+        sg_in = _norm_seg_local(ref_rec.get("segname"))
+        ic_in = _norm_ic_local(ref_rec.get("icode"))
+
+        if ch_in is None or rn_in is None:
+            _log(logger, f"⚠ Reference residue missing chain/residue_num: {ref_rec}\n")
+            return
+
+        ch_in = str(ch_in).strip()
+        try:
+            rn_in = int(rn_in)
+        except Exception:
+            _log(logger, f"⚠ Reference residue residue_num not int-convertible: {ref_rec}\n")
+            return
+
+        found = None
+        candidates = []
+
+        # SEGNAME is optional. With an explicit SEGNAME, match strictly.
+        # Without one, ignore SEGNAME and resolve by CHAIN+RESNUM(+ICODE),
+        # but only if that identity is unique in the selected reference.
+        for ch_key, residues in rcm.items():
+            for rr in (residues or []):
+                rr_ch = _real_chain_from_residue(rr, ch_key)
+                if rr_ch != ch_in:
                     continue
 
                 try:
-                    gi_i = int(gi)
-                    rn_i = int(rn)
+                    rr_rn = int(rr.get("residue_num"))
                 except Exception:
                     continue
 
-                idxmap_simple[(ch, rn_i)] = gi_i
-                namemap[gi_i] = r.get("residue_name", "UNK")
+                if rr_rn != rn_in:
+                    continue
 
-                # Prefer all_segnames if present (more correct for ribosome)
-                all_segs = r.get("all_segnames") or []
-                if all_segs:
-                    for sg in all_segs:
-                        if sg:
-                            idxmap_seg[(str(sg).strip(), ch, rn_i)] = gi_i
-                else:
-                    sg = r.get("segname")
-                    if sg:
-                        idxmap_seg[(str(sg).strip(), ch, rn_i)] = gi_i
+                rr_ic = _norm_ic_local(rr.get("icode"))
+                if ic_in is not None and rr_ic != ic_in:
+                    continue
 
-        gui.reference_residues = []
+                if sg_in is not None:
+                    rr_segs = [s for s in _all_segs_from_residue(rr) if s is not None]
+                    if sg_in not in rr_segs:
+                        continue
 
-        def _push(ref_rec, label):
-            ch_in = ref_rec.get("chain")
-            rn_in = ref_rec.get("residue_num")
-            sg_in = ref_rec.get("segname", None)
+                candidates.append(rr)
 
-            if ch_in is None or rn_in is None:
-                _log(logger,f"⚠ Reference residue missing chain/residue_num: {ref_rec}\n")
-                return
-
-            ch = str(ch_in).strip()
+        uniq_by_idx = {}
+        for rr in candidates:
             try:
-                rn = int(rn_in)
+                uniq_by_idx[int(rr.get("index"))] = rr
             except Exception:
-                _log(logger,f"⚠ Reference residue residue_num not int-convertible: {ref_rec}\n")
-                return
+                pass
 
-            sg = str(sg_in).strip() if sg_in else None
+        if len(uniq_by_idx) == 1:
+            found = next(iter(uniq_by_idx.values()))
+        if found is None:
+            token = f"{(sg_in + ':') if sg_in else ''}{ch_in}:{rn_in}"
+            if ic_in:
+                token += str(ic_in)
 
-            gi = None
-            if sg:
-                gi = idxmap_seg.get((sg, ch, rn))
-            if gi is None:
-                gi = idxmap_simple.get((ch, rn))
+            _log(
+                logger,
+                f"⚠ Reference residue not found unambiguously in SELECTED reference "
+                f"'{ref_id}': {token}\n"
+            )
+            return
 
-            if gi is None:
-                _log(logger,
-                    "⚠ Reference residue not found in residue_chain_map: "
-                    f"{(sg + ':') if sg else ''}{ch}:{rn}\n"
-                )
-                return
+        actual_seg = _primary_seg_from_residue(found)
 
-            gui.reference_residues.append({
-                "type": label,
-                "segname": sg_in,  # keep original (may preserve user’s exact formatting)
-                "chain": ch_in,
-                "residue_num": rn,
-                "residue_name": namemap.get(int(gi), "UNK"),
-                "index": int(gi),
-            })
+        rec = {
+            "type": label,
+            "segname": actual_seg,
+            "chain": _real_chain_from_residue(found, ch_in),
+            "residue_num": int(found.get("residue_num")),
+            "residue_name": found.get("residue_name", "UNK"),
+            "icode": _norm_ic_local(found.get("icode")),
+            "index": int(found.get("index")),
+        }
 
-        for s in (source_residues or []):
-            _push(s, "Source")
-        for t in (sink_residues or []):
-            _push(t, "Sink")
-    # --- end NEW block ---
-    # -------------------------------------------------------------------------
+        gui.reference_residues.append(rec)
 
-    # Seed reference's own residue_dict from gui.reference_residues
-    src_list, snk_list = [], []
-    for r in (gui.reference_residues or []):
+        token = (
+            f"{(actual_seg + ':') if actual_seg else ''}"
+            f"{rec['chain']}:{rec['residue_num']}{rec['icode'] or ''}"
+        )
+        _log(
+            logger,
+            f"✅ Reference {label.lower()} resolved in {ref_id}: "
+            f"{token} -> index {rec['index']}\n"
+        )
+
+    for s in (source_residues or []):
+        _push_reference(s, "Source")
+    for t in (sink_residues or []):
+        _push_reference(t, "Sink")
+
+    seeded_sources = [
+        dict(r) for r in (gui.reference_residues or [])
+        if r.get("type") == "Source"
+    ]
+    seeded_sinks = [
+        dict(r) for r in (gui.reference_residues or [])
+        if r.get("type") == "Sink"
+    ]
+
+    ref_source_list = []
+    for r in seeded_sources:
         item = {
             "chain": r.get("chain"),
             "residue_num": r.get("residue_num"),
@@ -2325,23 +2895,45 @@ def run_residue_mapping(jobname, pdb_info_dict, reference_pdb_path, source_resid
         }
         if r.get("segname"):
             item["segname"] = r.get("segname")
+        if r.get("icode"):
+            item["icode"] = r.get("icode")
+        ref_source_list.append(item)
 
-        if r.get("type") == "Source":
-            src_list.append(item)
-        elif r.get("type") == "Sink":
-            snk_list.append(item)
+    ref_sink_list = []
+    for r in seeded_sinks:
+        item = {
+            "chain": r.get("chain"),
+            "residue_num": r.get("residue_num"),
+            "index": r.get("index"),
+        }
+        if r.get("segname"):
+            item["segname"] = r.get("segname")
+        if r.get("icode"):
+            item["icode"] = r.get("icode")
+        ref_sink_list.append(item)
 
     pdb_info_dict[ref_id]["residue_dict"] = {
-        "source_residues": src_list,
-        "sink_residues": snk_list
+        "source_residues": ref_source_list,
+        "sink_residues": ref_sink_list,
     }
 
-    # Do alignments + mapping (this should map ref residues to each target PDB)
-    pdb_residue_dict = process_residue_info_and_alignments(
-        jobname, pdb_info_dict, reference_pdb_path, source_residues, sink_residues, gui
+    _log(
+        logger,
+        f"📌 Reference [{ref_id}] seeded for KSP: "
+        f"{len(ref_source_list)} source(s), {len(ref_sink_list)} sink(s).\n"
     )
 
-    # Write back per-PDB mapped indices
+    # IMPORTANT: use RESOLVED reference residues for target projection.
+    pdb_residue_dict = process_residue_info_and_alignments(
+        jobname,
+        pdb_info_dict,
+        reference_pdb_path,
+        seeded_sources,
+        seeded_sinks,
+        gui,
+        logger=logger,
+    )
+
     for pdb_id, match_dict in (pdb_residue_dict or {}).items():
         source_list = []
         for m in (match_dict.get("source_matches", []) or []):
@@ -2352,6 +2944,8 @@ def run_residue_mapping(jobname, pdb_info_dict, reference_pdb_path, source_resid
             }
             if m.get("target_segname"):
                 item["segname"] = m.get("target_segname")
+            if m.get("target_icode"):
+                item["icode"] = m.get("target_icode")
             source_list.append(item)
 
         sink_list = []
@@ -2363,20 +2957,35 @@ def run_residue_mapping(jobname, pdb_info_dict, reference_pdb_path, source_resid
             }
             if m.get("target_segname"):
                 item["segname"] = m.get("target_segname")
+            if m.get("target_icode"):
+                item["icode"] = m.get("target_icode")
             sink_list.append(item)
 
         if pdb_id in pdb_info_dict:
             pdb_info_dict[pdb_id]["residue_dict"] = {
                 "source_residues": source_list,
-                "sink_residues": sink_list
+                "sink_residues": sink_list,
             }
 
-    # Excel output + logs
+            _log(
+                logger,
+                f"📌 Target [{pdb_id}] projected for KSP: "
+                f"{len(source_list)} source(s), {len(sink_list)} sink(s).\n"
+            )
+
+    # Re-assert the selected reference after target write-back.
+    pdb_info_dict[ref_id]["residue_dict"] = {
+        "source_residues": ref_source_list,
+        "sink_residues": ref_sink_list,
+    }
+
     if pdb_residue_dict:
-        write_results_to_excel(jobname, pdb_residue_dict, gui.reference_residues)
-        _log(logger,"✅ Mapping results saved to Excel.\n")
+        write_results_to_excel(
+            jobname, pdb_residue_dict, gui.reference_residues
+        )
+        _log(logger, "✅ Mapping results saved to Excel.\n")
     else:
-        _log(logger,"⚠ Mapping completed, but no matches were found.\n")
+        _log(logger, "⚠ Mapping completed, but no target matches were found.\n")
 
     return pdb_residue_dict
 
@@ -2429,136 +3038,91 @@ def _all_segs_from_residue(r):
     return segs or [None]
 
 def _build_global_index_map(pdb_data):
+    """
+    Build the authoritative residue-identity -> global-index lookup.
+
+    Full identity is SEGNAME-aware.  SEGNAME-omitted keys are provided only
+    when that exact (chain, residue number, insertion code) identity is unique
+    across the whole structure.  An explicit residue without an insertion code
+    refers to the actual no-icode residue; it is not made ambiguous merely
+    because 129A/129B also exist.
+    """
+    residues = list((pdb_data or {}).get("global_residues", []) or [])
+    if not residues:
+        rcm = (pdb_data or {}).get("residue_chain_map", {}) or {}
+        for ch_key, lst in rcm.items():
+            residues.extend(lst or [])
+        if residues and all(r.get("index") is not None for r in residues):
+            residues.sort(key=lambda r: int(r.get("index")))
+
+    strict_candidates = {}
+    simple_candidates = {}
+
+    for r in residues:
+        gi = r.get("index")
+        rn = r.get("residue_num")
+        if gi is None or rn is None:
+            continue
+        try:
+            gi = int(gi)
+            rn = int(rn)
+        except Exception:
+            continue
+
+        ch = _real_chain_from_residue(r, "")
+        ic = _clean_icode(r.get("icode"))
+        segs = _all_segs_from_residue(r)
+
+        for sg in segs:
+            strict_candidates.setdefault((sg, ch, rn, ic), []).append(gi)
+        simple_candidates.setdefault((ch, rn, ic), []).append(gi)
+
     out = {}
-    rcm = (pdb_data or {}).get("residue_chain_map", {}) or {}
-
-    simple_seen, simple_bad = {}, set()
-    strict_noic_seen, strict_noic_bad = {}, set()
-
-    for ch_key, residues in rcm.items():
-
-        for r in (residues or []):
-            ch = _real_chain_from_residue(r, ch_key)
-
-        for r in (residues or []):
-            gi = r.get("index")
-            rn = r.get("residue_num")
-            ic = r.get("icode", None)
-
-            if gi is None or rn is None:
-                continue
-            try:
-                gi = int(gi)
-            except Exception:
-                continue
-
-            s = str(rn).strip()
-            digits = "".join(c for c in s if c.isdigit())
-            if not digits:
-                continue
-            rn_i = int(digits)
-
-            ic = ic if ic not in ("", " ") else None
-            if ic is None:
-                tail = "".join(c for c in s if c.isalpha()).strip()
-                ic = tail or None
-            ic = (str(ic).strip() if ic else None)
-
-            # seg listesi: all_segnames varsa hepsini kullan
-            segs = _all_segs_from_residue(r)
-
-            # ---- STRICT: (seg, ch, rn, ic) her zaman yazılabilir
-            # ---- STRICT-NOIC: (seg, ch, rn, None) sadece unambiguous ise yazılacak
-            for sg in segs:
-                out[(sg, ch, rn_i, ic)] = gi
-
-                k_noic = (sg, ch, rn_i, None)
-                if k_noic in strict_noic_seen and strict_noic_seen[k_noic] != gi:
-                    strict_noic_bad.add(k_noic)
-                else:
-                    strict_noic_seen.setdefault(k_noic, gi)
-
-            # ---- SIMPLE (chain-only) ----
-            k_simple = (ch, rn_i, ic)
-            k_simple_noic = (ch, rn_i, None)
-
-            if k_simple in simple_seen and simple_seen[k_simple] != gi:
-                simple_bad.add(k_simple)
-            else:
-                simple_seen.setdefault(k_simple, gi)
-
-            if k_simple_noic in simple_seen and simple_seen[k_simple_noic] != gi:
-                simple_bad.add(k_simple_noic)
-            else:
-                simple_seen.setdefault(k_simple_noic, gi)
-
-    # strict_noic only if unambiguous
-    for k, gi in strict_noic_seen.items():
-        out[k] = None if k in strict_noic_bad else gi
-
-    # simple only if unambiguous
-    for k, gi in simple_seen.items():
-        out[k] = None if k in simple_bad else gi
+    for key, vals in strict_candidates.items():
+        uniq = sorted(set(int(v) for v in vals))
+        out[key] = uniq[0] if len(uniq) == 1 else None
+    for key, vals in simple_candidates.items():
+        uniq = sorted(set(int(v) for v in vals))
+        out[key] = uniq[0] if len(uniq) == 1 else None
 
     return out
 
-
 def resolve_residue_to_global_index(res, global_index_map):
     """
-    Resolve a residue token/dict into a global index using the ribosome-safe map.
+    Resolve one residue identity to the structure's authoritative global index.
 
-    Tries STRICT (seg,chain,rn,icode) first.
-    Falls back to:
-      - (seg,chain,rn,None)  (ignore icode but keep seg)
-      - (chain,rn,icode)     ONLY if it exists (i.e., unique in structure)
-      - (chain,rn,None)      ONLY if it exists (i.e., unique in structure)
-
-    This prevents wrong mapping in ribosomes.
+    - Explicit SEGNAME: strict (seg, chain, resnum, icode) identity.
+    - SEGNAME omitted: exact (chain, resnum, icode), accepted only when unique
+      across the whole structure.
+    - No arithmetic conversion such as residue 150 -> index 149 is performed.
+      The index always comes from the structure lookup.
     """
-    # If res is dict-like from your GUI internal structures
     if isinstance(res, dict):
-        seg = res.get("segname", None)
-        ch  = res.get("chain", None)
-        rn_raw = res.get("residue_num", None)
-        ic = res.get("icode", None)
-        token_like = {"segname": seg, "chain": ch, "residue_num": rn_raw, "icode": ic}
+        token_like = {
+            "segname": res.get("segname", None),
+            "chain": res.get("chain", None),
+            "residue_num": res.get("residue_num", None),
+            "icode": res.get("icode", None),
+        }
     else:
         token_like = res
 
-    # parse token robustly (your existing parser)
     seg, ch, rn, ic = flex_parse_residue_token(token_like, strict=False, default_seg="")
-
-    seg = str(seg).strip() if seg not in (None, "", " ") else None
-    ch  = (str(ch).strip() if ch else "")
+    seg = _clean_seg(seg)
+    ch = _clean_chain(ch)
     try:
         rn = int(rn) if rn is not None else None
     except Exception:
         rn = None
-    ic = (str(ic).strip() if ic not in (None, "", " ") else None)
+    ic = _clean_icode(ic)
 
     if not ch or rn is None:
         return None
 
-    # STRICT first
-    k1 = (seg, ch, rn, ic)
-    if k1 in global_index_map:
-        return global_index_map[k1]
+    if seg is not None:
+        return global_index_map.get((seg, ch, rn, ic), None)
 
-    # ignore icode but KEEP seg
-    k2 = (seg, ch, rn, None)
-    if k2 in global_index_map:
-        return global_index_map[k2]
-
-    # chain-only fallback ONLY if present (meaning unique)
-    k3 = (ch, rn, ic)
-    if k3 in global_index_map:
-        return global_index_map[k3]
-
-    k4 = (ch, rn, None)
-    if k4 in global_index_map:
-        return global_index_map[k4]
-
-    return None
+    return global_index_map.get((ch, rn, ic), None)
 
 
 def run_adj_matrix(jobname, rcutt, pdb_info_dict, gui):
@@ -2594,8 +3158,8 @@ def run_adj_matrix(jobname, rcutt, pdb_info_dict, gui):
             adj_matrix_file = os.path.join(pdb_folder, f"{pdb_id}_adj_matrix.txt")
             edgeweight_matrix_file = os.path.join(pdb_folder, f"{pdb_id}_edgeweight_matrix.txt")
 
-            np.savetxt(adj_matrix_file, adj, fmt='%.6f')
-            np.savetxt(edgeweight_matrix_file, ew, fmt='%.6f')
+            save_matrix_to_file(adj, adj_matrix_file)
+            save_matrix_to_file(ew, edgeweight_matrix_file)
 
             gui.log_output(f"✅ adj & edgeweight matrices saved for {pdb_id}.\n")
 
@@ -2629,18 +3193,18 @@ def calculate_yens_k_shortest_paths(pdb_data, source_idx, sink_idx, k, gui, logg
         f"sink={sink_idx}, k={k}\n"
     )
 
-    # düğümleri ekle
+    # Add graph nodes
     for i in range(num_nodes):
         G.add_node(i)
 
-    # kenarları ekle (adj != 0)
+    # Add edges for non-zero adjacency entries
     rows, cols = np.where(
         (adj != 0) & (np.arange(num_nodes)[:, None] != np.arange(num_nodes))
     )
     for i, j in zip(rows, cols):
         G.add_edge(i, j, weight=float(edgeweight[i][j]))
 
-    # hızlı özet
+    # Compact graph summary
     _log(logger,
         f"   🔧 Graph summary: nodes={G.number_of_nodes()}, "
         f"edges={G.number_of_edges()}\n"
@@ -2648,7 +3212,7 @@ def calculate_yens_k_shortest_paths(pdb_data, source_idx, sink_idx, k, gui, logg
 
     components = list(nx.connected_components(G))
 
-    # source / sink graph’ta mı?
+    # Verify that source and sink exist in the graph
     if source_idx not in G.nodes or sink_idx not in G.nodes:
         _log(logger,
             f"⚠ Warning: source {source_idx} or target {sink_idx} "
@@ -2656,7 +3220,7 @@ def calculate_yens_k_shortest_paths(pdb_data, source_idx, sink_idx, k, gui, logg
         )
         return [], []
 
-    # hangi component içindeler?
+    # Identify the connected component of each endpoint
     comp_src = comp_snk = None
     for ci, comp in enumerate(components):
         if source_idx in comp:
@@ -2677,7 +3241,7 @@ def calculate_yens_k_shortest_paths(pdb_data, source_idx, sink_idx, k, gui, logg
     deg_t = G.degree[sink_idx]
 
 
-    # ✅ K-paths hesapla
+    # Calculate K shortest paths
     try:
         _log(logger, "⏳ Calculating paths…\n")
         paths = list(
@@ -2718,7 +3282,7 @@ def calculate_shortest_paths(jobname, k, pdb_info_dict, gui,logger=None):
             f"{len(src_list)} sources, {len(snk_list)} sinks.\n"
         )
 
-        # ✅ Önce kaynak/hedef listesi var mı kontrol et
+        # Verify source and sink lists before path calculation
         if not src_list or not snk_list:
             _log(logger,
                 f"⚠ {pdb_id}: source/sink list is empty. "
@@ -2726,7 +3290,7 @@ def calculate_shortest_paths(jobname, k, pdb_info_dict, gui,logger=None):
             )
             continue
 
-        # adjacency & edgeweight kontrolü
+        # Validate adjacency and edge-cost matrices
         adj = pdb_data.get('adj_matrix')
         ew = pdb_data.get('edgeweight_matrix')
 
@@ -2751,7 +3315,7 @@ def calculate_shortest_paths(jobname, k, pdb_info_dict, gui,logger=None):
         paths_dict[pdb_id] = {}
         per_pdb_paths = 0
 
-        # kaynaklar
+        # Sources
         for source in src_list:
             s_idx = source.get('index')
             s_chain = source.get('chain')
@@ -2765,7 +3329,7 @@ def calculate_shortest_paths(jobname, k, pdb_info_dict, gui,logger=None):
                 )
                 continue
 
-            # hedefler
+            # Sinks
             for sink in snk_list:
                 t_idx = sink.get('index')
                 t_chain = sink.get('chain')
@@ -2824,7 +3388,7 @@ def save_paths_to_excel(jobname, paths_dict_2, pdb_info_dict, gui=None,logger=No
 
     per_pdb_files = []
 
-    # --- k'yi infer et (tüm pair'lerde genelde aynıdır) ---
+    # --- Infer K from stored path sets ---
     def _infer_k(pd2):
         m = 0
         for _pair_dict in pd2.values():
@@ -2849,7 +3413,7 @@ def save_paths_to_excel(jobname, paths_dict_2, pdb_info_dict, gui=None,logger=No
 
     k_infer = _infer_k(paths_dict_2)
 
-    # --- NORMALİZASYONU TEK SEFERDE HESAPLA (0–1 aralığında) ---
+    # --- Compute normalization once on the 0–1 scale ---
     all_normalized_frequencies = compute_all_normalized_frequencies(
         paths_dict_2,
         pdb_info_dict=pdb_info_dict,
@@ -2880,7 +3444,7 @@ def save_paths_to_excel(jobname, paths_dict_2, pdb_info_dict, gui=None,logger=No
                 if not path:
                     continue
 
-                # Token formatı 'SEG:CHAIN:RES' veya 'CHAIN:RES' olabilir
+                # Token format may be SEG:CHAIN:RES or CHAIN:RES
                 src_seg, src_ch, src_res, src_ic = flex_parse_residue_token(pdata['paths'][0][0])
                 sink_seg, sink_ch, sink_res, sink_ic = flex_parse_residue_token(pdata['paths'][0][-1])
 
@@ -2897,10 +3461,10 @@ def save_paths_to_excel(jobname, paths_dict_2, pdb_info_dict, gui=None,logger=No
                     ws_paths.write(row_p, 7, cost)
                 row_p += 1
 
-        # --- Sheet: Frequencies (ham sayımlar, per-PDB) ---
+        # --- Sheet: Frequencies (raw per-structure counts) ---
         ws_freq = wb.add_worksheet("Frequencies")
 
-        # Bu PDB'deki tüm iç düğümler (source/sink hariç)
+        # All internal nodes in this structure, excluding source/sink endpoints
         all_residues = sorted(
             {
                 rc
@@ -2911,8 +3475,8 @@ def save_paths_to_excel(jobname, paths_dict_2, pdb_info_dict, gui=None,logger=No
             key=_sort_residue_token_key
         )
 
-        # Başlıklar: 3 satır (SEG / CHAIN / RES)
-        # İlk 5 kolon: [PDB ID, src_ch, src_res, sink_ch, sink_res] (bunları da yazıyoruz)
+        # Three header rows: SEG / CHAIN / RES
+        # First five columns: PDB ID, source chain/residue, sink chain/residue
         ws_freq.write(2, 0, "PDB ID")
         ws_freq.write(2, 1, "Source Chain")
         ws_freq.write(2, 2, "Source Residue")
@@ -3037,12 +3601,12 @@ def save_paths_to_excel(jobname, paths_dict_2, pdb_info_dict, gui=None,logger=No
                 ws_counts.write_number(row, 5, per_pdb_counts[rc])
                 row += 1
 
-            row += 1  # boş satır
+            row += 1  # blank row
 
         # ========== 3) PERCENT FREQUENCIES SHEET ==========
         ws_pct = wb2.add_worksheet("Percent Frequencies")
 
-        # Tüm yapılar için global residue listesi (iç düğümler)
+        # Global internal-residue list across all structures
         all_residues_global = sorted(
             {
                 rc
@@ -3054,7 +3618,7 @@ def save_paths_to_excel(jobname, paths_dict_2, pdb_info_dict, gui=None,logger=No
             key=_sort_residue_token_key
         )
 
-        # Başlıklar: 3 satır (SEG / CHAIN / RES)
+        # Three header rows: SEG / CHAIN / RES
         ws_pct.write(0, 0, "PDB ID")
         ws_pct.write(1, 0, "")
         ws_pct.write(2, 0, "")
@@ -3065,7 +3629,7 @@ def save_paths_to_excel(jobname, paths_dict_2, pdb_info_dict, gui=None,logger=No
             ws_pct.write(1, col, ch)   # CHAIN
             ws_pct.write(2, col, rn)   # RES
 
-        # Veri satırları
+        # Data rows
         row_p = 3
         for pdb_base_key, norm_map in all_normalized_frequencies.items():
             ws_pct.write(row_p, 0, pdb_base_key)
@@ -3087,7 +3651,7 @@ def save_paths_to_excel(jobname, paths_dict_2, pdb_info_dict, gui=None,logger=No
 # PATH SIMILARITY (NEW LOGIC) - FUNCTIONS
 # ============================================================
 # ============================================================
-# CO-OCCURRENCE BACKBONE (HOCANIN İSTEDİĞİ) - FUNCTIONS
+# CO-OCCURRENCE BACKBONE - FUNCTIONS
 # ============================================================
 
 import os
@@ -4155,7 +4719,7 @@ def _draw_representative_path_summary(
     plt.close(fig)
 
 
-def run_path_similarity_for_one_structure(
+def _run_path_similarity_for_one_structure_legacy_exact(
     pdb_key,
     paths_dict_2,
     pdb_info_dict,
@@ -4169,16 +4733,868 @@ def run_path_similarity_for_one_structure(
     """
     Path similarity for ONE structure.
 
-    Correct logic
-    -------------
+    Workflow
+    --------
     1) Collect paths for selected pairs
-    2) If paths are already global node indices, DO NOT remap them
-    3) Build binary incidence matrix from per-path unique node sets
-    4) Compute cosine similarity
-    5) Cluster with threshold graph connected components
-    6) Choose representative from REAL calculated paths
-    7) Write representative/display path using convert_paths_to_residues(...)
-       so labels match Path Explorer and other outputs
+    2) Robustly map path nodes to structure index-space
+    3) Keep mapped full path sequences
+    4) Compute edge-overlap similarity S using ordered path edges
+    5) Threshold graph clustering
+    6) Save outputs
+
+    Outputs
+    -------
+    - PATHSIM__COSINE__*.png
+    - PATHSIM__CLUSTER_SIZES__*.png
+    - PATHSIM__SUMMARY__*.xlsx
+    - PATHSIM__DIAG__*.json
+    """
+
+    import os
+    import re
+    import json
+    import math
+    import numpy as np
+    import pandas as pd
+
+    os.makedirs(out_dir, exist_ok=True)
+
+    def _log_local(msg: str):
+        try:
+            if logger is None:
+                print(msg)
+            elif hasattr(logger, "log_output"):
+                logger.log_output(msg)
+            else:
+                print(msg)
+        except Exception:
+            pass
+
+    def _safe_int(x):
+        try:
+            return int(x)
+        except Exception:
+            return None
+
+    def _safe_float(x):
+        try:
+            val = float(x)
+            if math.isfinite(val):
+                return val
+            return None
+        except Exception:
+            return None
+
+    def _split_token_any(s: str):
+        """
+        Accept:
+          - A:123
+          - A,123
+          - SEG:A:123
+          - SEG,A,123
+          - optional insertion code: A:123A / SEG:A:123A
+        Return: (seg, ch, rn_int, icode_or_None)
+        """
+        s = (s or "").strip().replace(";", ",")
+        s = re.sub(r"\s+", "", s)
+        s = s.replace(",", ":")
+        parts = [p for p in s.split(":") if p != ""]
+        if len(parts) < 2:
+            return ("", "", None, None)
+
+        if len(parts) == 2:
+            seg = ""
+            ch = parts[0]
+            rn_raw = parts[1]
+        else:
+            seg = ":".join(parts[:-2])
+            ch = parts[-2]
+            rn_raw = parts[-1]
+
+        ch = str(ch).strip().upper()
+
+        digits = "".join([c for c in str(rn_raw) if c.isdigit()])
+        if not digits:
+            return (seg.strip(), ch, None, None)
+        rn_int = int(digits)
+
+        tail = "".join([c for c in str(rn_raw) if c.isalpha()])
+        ic = tail.strip() if tail else None
+
+        return (seg.strip(), ch, rn_int, ic)
+
+    def _extract_path_and_cost_from_entry(entry, fallback_cost=None):
+        """
+        Supports:
+          - path as plain list/tuple
+          - path entry as dict with path/nodes/residues and cost-like field
+        """
+        cost_keys = [
+            "cost", "path_cost", "total_cost", "weight", "distance",
+            "length_cost", "cum_cost", "score"
+        ]
+        path_keys = ["path", "nodes", "residues", "node_path", "route"]
+
+        if isinstance(entry, dict):
+            path_obj = None
+            for k in path_keys:
+                if k in entry and entry.get(k) is not None:
+                    path_obj = entry.get(k)
+                    break
+            if path_obj is None:
+                # Sometimes the dict itself may actually be node-like, not path-like
+                # In that case treat it as not a valid path record here.
+                return None, fallback_cost
+
+            cost_val = None
+            for ck in cost_keys:
+                if ck in entry:
+                    cost_val = _safe_float(entry.get(ck))
+                    if cost_val is not None:
+                        break
+            if cost_val is None:
+                cost_val = fallback_cost
+            return path_obj, cost_val
+
+        return entry, fallback_cost
+
+    def _get_parallel_cost_lists(pdata):
+        """
+        Look for per-path cost arrays stored alongside pdata["paths"].
+        Returns list or None.
+        """
+        if not isinstance(pdata, dict):
+            return None
+        candidate_keys = [
+            "costs", "path_costs", "total_costs", "weights",
+            "distances", "scores"
+        ]
+        for ck in candidate_keys:
+            vals = pdata.get(ck, None)
+            if isinstance(vals, (list, tuple)):
+                return list(vals)
+        return None
+
+    def _find_edgeweight_matrix(pdb_data_local):
+        """
+        Try common key names for the edge-weight matrix.
+        """
+        candidate_keys = [
+            "edgeweight_matrix",
+            "edge_weight_matrix",
+            "weight_matrix",
+            "weights_matrix",
+            "distance_matrix",
+            "cost_matrix",
+            "edge_weights",
+        ]
+        for ck in candidate_keys:
+            W = pdb_data_local.get(ck, None)
+            if W is not None:
+                return W
+        return None
+
+    def _compute_cost_from_mapped_seq(mapped_seq, W):
+        """
+        Cost = sum of consecutive edge weights along mapped sequence.
+        Returns None if unavailable/uncomputable.
+        """
+        if W is None:
+            return None
+        if not isinstance(mapped_seq, (list, tuple)) or len(mapped_seq) < 2:
+            return None
+
+        total = 0.0
+        used_any = False
+
+        try:
+            nW0 = int(W.shape[0])
+            nW1 = int(W.shape[1]) if len(W.shape) > 1 else int(W.shape[0])
+        except Exception:
+            return None
+
+        for a, b in zip(mapped_seq[:-1], mapped_seq[1:]):
+            ia = _safe_int(a)
+            ib = _safe_int(b)
+            if ia is None or ib is None:
+                continue
+            if not (0 <= ia < nW0 and 0 <= ib < nW1):
+                continue
+            try:
+                w = _safe_float(W[ia, ib])
+            except Exception:
+                w = None
+            if w is None:
+                continue
+            total += float(w)
+            used_any = True
+
+        return total if used_any else None
+
+    # ---------------- validate inputs ----------------
+    if not isinstance(paths_dict_2, dict) or pdb_key not in paths_dict_2:
+        _log_local(f"⚠ PathSimilarity: pdb_key not found in paths_dict_2: {pdb_key}\n")
+        return []
+
+    if not isinstance(pdb_info_dict, dict) or pdb_key not in pdb_info_dict:
+        _log_local(f"⚠ PathSimilarity: pdb_key not found in pdb_info_dict: {pdb_key}\n")
+        return []
+
+    pdb_data = (pdb_info_dict or {}).get(pdb_key) or (pdb_info_dict or {}).get(str(pdb_key)) or {}
+    if not isinstance(pdb_data, dict) or not pdb_data:
+        _log_local(f"⚠ PathSimilarity: pdb_data not found for {pdb_key}\n")
+        return []
+
+    adj = pdb_data.get("adj_matrix", None)
+    if adj is None:
+        _log_local(f"⚠ PathSimilarity: adj_matrix missing for {pdb_key}\n")
+        return []
+
+    try:
+        n_adj = int(adj.shape[0])
+    except Exception:
+        _log_local(f"⚠ PathSimilarity: invalid adj_matrix for {pdb_key}\n")
+        return []
+
+    W = _find_edgeweight_matrix(pdb_data)
+
+    pair_dict = (paths_dict_2 or {}).get(pdb_key, {}) or {}
+    if not isinstance(pair_dict, dict) or not pair_dict:
+        _log_local(f"⚠ PathSimilarity: no pairs for {pdb_key}\n")
+        return []
+
+    # ---------------- build lookup maps ----------------
+    rcm = pdb_data.get("residue_chain_map", {}) or {}
+
+    uid_to_idx = {}         # (seg, CH, rn, ic) -> gi
+    uid_to_idx_noseg = {}   # ("", CH, rn, ic) -> gi
+    chainrnic_to_idx = {}   # (CH, rn, ic) -> gi
+    chainrn_to_idx = {}     # (CH, rn) -> gi
+    idx_to_label = {}
+
+    max_meta_idx = -1
+
+    # Case 1: residue_chain_map as chain -> list[dict]
+    if isinstance(rcm, dict):
+        for ch, residues in rcm.items():
+            if isinstance(residues, list):
+                chU = str(ch).strip().upper()
+                for r in (residues or []):
+                    gi = _safe_int(r.get("index", None))
+                    if gi is None:
+                        continue
+                    max_meta_idx = max(max_meta_idx, gi)
+
+                    rn_raw = r.get("residue_num", None)
+                    digits = "".join([c for c in str(rn_raw) if c.isdigit()])
+                    if not digits:
+                        continue
+                    rn_i = int(digits)
+
+                    ic = r.get("icode", None)
+                    ic = str(ic).strip() if ic not in (None, "", " ") else None
+
+                    seg = ""
+                    all_segs = r.get("all_segnames") or []
+                    if all_segs:
+                        for sg in all_segs:
+                            if sg is None:
+                                continue
+                            sg = str(sg).strip()
+                            if sg:
+                                seg = sg
+                                break
+                    if not seg:
+                        seg0 = r.get("segname", None)
+                        seg = str(seg0).strip() if seg0 not in (None, "", " ") else ""
+
+                    uid_to_idx[(seg, chU, rn_i, ic)] = gi
+                    uid_to_idx[(seg, chU, rn_i, None)] = uid_to_idx.get((seg, chU, rn_i, None), gi)
+                    uid_to_idx_noseg[("", chU, rn_i, ic)] = gi
+                    uid_to_idx_noseg[("", chU, rn_i, None)] = uid_to_idx_noseg.get(("", chU, rn_i, None), gi)
+                    chainrnic_to_idx[(chU, rn_i, ic)] = gi
+                    chainrnic_to_idx[(chU, rn_i, None)] = chainrnic_to_idx.get((chU, rn_i, None), gi)
+                    chainrn_to_idx[(chU, rn_i)] = gi
+
+                    aa3 = str(r.get("residue_name", "UNK")).strip().upper()
+
+                    lab = _format_plot_residue_name(
+                        chain=chU,
+                        resnum=rn_i,
+                        aa3=aa3,
+                        segname=seg,
+                        icode=ic,
+                    )
+
+                    idx_to_label[gi] = lab
+
+    # Case 2: global_index_to_residue fallback
+    g2r = pdb_data.get("global_index_to_residue", {}) or {}
+    if isinstance(g2r, dict):
+        for k, r in g2r.items():
+            gi = _safe_int(k)
+            if gi is None:
+                continue
+            max_meta_idx = max(max_meta_idx, gi)
+
+            if not isinstance(r, dict):
+                continue
+
+            chU = str(r.get("chain") or r.get("chain_id") or r.get("chainID") or "").strip().upper()
+            rn_raw = r.get("residue_num", None)
+            digits = "".join([c for c in str(rn_raw) if c.isdigit()])
+            if not chU or not digits:
+                continue
+            rn_i = int(digits)
+
+            ic = r.get("icode", None)
+            ic = str(ic).strip() if ic not in (None, "", " ") else None
+            seg = str(r.get("segname") or r.get("seg") or "").strip()
+
+            uid_to_idx[(seg, chU, rn_i, ic)] = gi
+            uid_to_idx[(seg, chU, rn_i, None)] = uid_to_idx.get((seg, chU, rn_i, None), gi)
+            uid_to_idx_noseg[("", chU, rn_i, ic)] = gi
+            uid_to_idx_noseg[("", chU, rn_i, None)] = uid_to_idx_noseg.get(("", chU, rn_i, None), gi)
+            chainrnic_to_idx[(chU, rn_i, ic)] = gi
+            chainrnic_to_idx[(chU, rn_i, None)] = chainrnic_to_idx.get((chU, rn_i, None), gi)
+            chainrn_to_idx[(chU, rn_i)] = gi
+
+            if gi not in idx_to_label:
+                aa3 = str(r.get("residue_name", "UNK")).strip().upper()
+
+                lab = _format_plot_residue_name(
+                    chain=chU,
+                    resnum=rn_i,
+                    aa3=aa3,
+                    segname=seg,
+                    icode=ic,
+                )
+
+                idx_to_label[gi] = lab
+
+    # ---------------- canonical no-SEG ambiguity cleanup ----------------
+    # A single, homogeneous conversion policy is used here:
+    #   node identity -> structure lookup -> global index
+    # Chain/residue-only keys are retained only when they point to one unique
+    # physical residue in the whole structure.  This preserves historical
+    # protein behavior while preventing arbitrary SEGNAME choices in ribosomes.
+    try:
+        _simple_rnic_candidates = {}
+        _simple_rn_candidates = {}
+        _res_iter_for_ambiguity = []
+        if isinstance(rcm, dict):
+            for ch_key, residues in rcm.items():
+                for r in (residues or []):
+                    _res_iter_for_ambiguity.append((ch_key, r))
+        g2r_for_ambiguity = pdb_data.get("global_index_to_residue", {}) or {}
+        if isinstance(g2r_for_ambiguity, dict):
+            for gi_k, r in g2r_for_ambiguity.items():
+                if not isinstance(r, dict):
+                    continue
+                _res_iter_for_ambiguity.append((r.get("chain", ""), {**r, "index": gi_k}))
+
+        for ch_key, r in _res_iter_for_ambiguity:
+            gi = _safe_int(r.get("index", None))
+            if gi is None:
+                continue
+            chU = _real_chain_from_residue(r, ch_key).upper() if "_real_chain_from_residue" in globals() else str(r.get("chain") or ch_key).strip().upper()
+            rn_raw = r.get("residue_num", None)
+            digits = "".join([c for c in str(rn_raw) if c.isdigit()])
+            if not chU or not digits:
+                continue
+            rn_i = int(digits)
+            ic = r.get("icode", None)
+            ic = str(ic).strip() if ic not in (None, "", " ") else None
+            _simple_rnic_candidates.setdefault((chU, rn_i, ic), set()).add(int(gi))
+            _simple_rnic_candidates.setdefault((chU, rn_i, None), set()).add(int(gi))
+            _simple_rn_candidates.setdefault((chU, rn_i), set()).add(int(gi))
+
+        for key, vals in _simple_rnic_candidates.items():
+            resolved = next(iter(vals)) if len(vals) == 1 else None
+            chainrnic_to_idx[key] = resolved
+            uid_to_idx_noseg[("", key[0], key[1], key[2])] = resolved
+        for key, vals in _simple_rn_candidates.items():
+            chainrn_to_idx[key] = next(iter(vals)) if len(vals) == 1 else None
+    except Exception:
+        pass
+
+    n_nodes = max(n_adj, (max_meta_idx + 1) if max_meta_idx >= 0 else n_adj)
+    strict_large_system = (n_nodes > 1500)
+    # ---------------- collect selected paths ----------------
+    if selected_pairs:
+        sel = set(selected_pairs)
+        keys_iter = [k for k in pair_dict.keys() if k in sel]
+    else:
+        keys_iter = list(pair_dict.keys())
+
+    # store records as dicts: {"pair_key", "raw_path", "raw_cost"}
+    all_path_records = []
+
+    for pk in keys_iter:
+        pdata = pair_dict.get(pk, {}) or {}
+        paths = (pdata.get("paths", []) or [])
+        parallel_costs = _get_parallel_cost_lists(pdata)
+
+        for j, entry in enumerate(paths):
+            fallback_cost = None
+            if parallel_costs is not None and j < len(parallel_costs):
+                fallback_cost = _safe_float(parallel_costs[j])
+
+            path_obj, cost_obj = _extract_path_and_cost_from_entry(entry, fallback_cost=fallback_cost)
+            if path_obj:
+                all_path_records.append({
+                    "pair_key": str(pk),
+                    "raw_path": path_obj,
+                    "raw_cost": cost_obj,
+                    "source_entry_index_0based": j,
+                })
+
+    if not all_path_records:
+        _log_local(f"⚠ PathSimilarity: no paths after filtering for {pdb_key}\n")
+        return []
+
+    # ---------------- 1-based numeric heuristic ----------------
+    seen_zero = False
+    seen_n = False
+    scan_lim = 5000
+    scanned = 0
+
+    for rec in all_path_records:
+        p = rec["raw_path"]
+        for x in p:
+            if scanned >= scan_lim:
+                break
+            scanned += 1
+            gi = _safe_int(x) if not isinstance(x, (tuple, dict, list)) else None
+            if gi is None:
+                continue
+            if gi == 0:
+                seen_zero = True
+            if gi == n_nodes:
+                seen_n = True
+        if scanned >= scan_lim:
+            break
+
+    one_based_hint = (not seen_zero) and seen_n
+
+    unmapped_examples = []
+    oor_examples = []
+
+    def _node_to_idx(node):
+        # dict node
+        strict_large_system = (n_nodes > 1500)
+        if isinstance(node, dict):
+
+            seg = str(node.get("segname") or node.get("seg") or "").strip()
+            ch = str(node.get("chain") or node.get("chain_id") or node.get("chainID") or "").strip().upper()
+            rn = node.get("residue_num") if "residue_num" in node else node.get("resid")
+            rn_i = _safe_int(rn) if rn is not None else None
+            ic = node.get("icode") or None
+            ic = str(ic).strip() if ic not in (None, "", " ") else None
+            if not ch or rn_i is None:
+                return None
+
+            gi = uid_to_idx.get((seg, ch, rn_i, ic))
+            if gi is None:
+                gi = uid_to_idx.get((seg, ch, rn_i, None))
+            if gi is None:
+                gi = uid_to_idx_noseg.get(("", ch, rn_i, ic))
+            if gi is None:
+                gi = uid_to_idx_noseg.get(("", ch, rn_i, None))
+            if gi is None:
+                gi = chainrnic_to_idx.get((ch, rn_i, ic))
+            if gi is None:
+                gi = chainrnic_to_idx.get((ch, rn_i, None))
+            if gi is None and not strict_large_system:
+                gi = chainrn_to_idx.get((ch, rn_i))
+            if gi is None:
+                return None
+
+            gi = int(gi)
+            return gi if 0 <= gi < n_nodes else None
+
+        # tuple/list node
+        if isinstance(node, (tuple, list)) and len(node) >= 2:
+            try:
+                ch = str(node[0]).strip().upper()
+                rn_i = _safe_int(node[1])
+                ic = None
+                if len(node) >= 3 and node[2] not in (None, "", " "):
+                    ic = str(node[2]).strip()
+                if ch and rn_i is not None:
+                    gi = chainrnic_to_idx.get((ch, rn_i, ic))
+                    if gi is None:
+                        gi = chainrnic_to_idx.get((ch, rn_i, None))
+                    if gi is None and not strict_large_system:
+                        gi = chainrn_to_idx.get((ch, rn_i))
+                    if gi is None:
+                        return None
+                    gi = int(gi)
+                    return gi if 0 <= gi < n_nodes else None
+            except Exception:
+                return None
+
+        # str node
+        if isinstance(node, str):
+            s = node.strip()
+
+            gi = _safe_int(s)
+            if gi is not None:
+                if 0 <= gi < n_nodes:
+                    return gi
+                if one_based_hint and 1 <= gi <= n_nodes:
+                    gi2 = gi - 1
+                    return gi2 if 0 <= gi2 < n_nodes else None
+                return None
+
+            seg, ch, rn_i, ic = _split_token_any(s)
+            if ch and rn_i is not None:
+                gi = uid_to_idx.get((seg, ch, rn_i, ic))
+                if gi is None:
+                    gi = uid_to_idx.get((seg, ch, rn_i, None))
+                if gi is None:
+                    gi = uid_to_idx_noseg.get(("", ch, rn_i, ic))
+                if gi is None:
+                    gi = uid_to_idx_noseg.get(("", ch, rn_i, None))
+                if gi is None:
+                    gi = chainrnic_to_idx.get((ch, rn_i, ic))
+                if gi is None:
+                    gi = chainrnic_to_idx.get((ch, rn_i, None))
+                if gi is None and not strict_large_system:
+                    gi = chainrn_to_idx.get((ch, rn_i))
+                if gi is None:
+                    return None
+                gi = int(gi)
+                return gi if 0 <= gi < n_nodes else None
+
+        # generic numeric fallback
+        gi = _safe_int(node)
+        if gi is not None:
+            if 0 <= gi < n_nodes:
+                return gi
+            if one_based_hint and 1 <= gi <= n_nodes:
+                gi2 = gi - 1
+                return gi2 if 0 <= gi2 < n_nodes else None
+        return None
+
+    # ---------------- build idx_paths and incidence matrix ----------------
+    idx_paths = []              # unique nodes in order, for incidence/path reporting
+    idx_paths_seq = []          # mapped full sequence for cost computation
+    path_rows_meta = []
+    path_costs = []
+    path_efficiencies = []
+
+    skipped_all_unmapped = 0
+    total_nodes_seen = 0
+    total_nodes_mapped = 0
+
+    for p_idx, rec in enumerate(all_path_records):
+        raw_path = rec["raw_path"]
+        raw_cost = rec["raw_cost"]
+
+        nodes_seen_in_order = []
+        mapped_seq = []
+        seen_local = set()
+
+        for x in raw_path:
+            total_nodes_seen += 1
+            gi = _node_to_idx(x)
+            if gi is None:
+                if len(unmapped_examples) < 20:
+                    unmapped_examples.append(str(x))
+                continue
+
+            total_nodes_mapped += 1
+
+            if not (0 <= gi < n_nodes):
+                if len(oor_examples) < 20:
+                    oor_examples.append(str(gi))
+                if strict:
+                    raise ValueError(f"Node index out of range: {gi} (n_nodes={n_nodes})")
+                continue
+
+            mapped_seq.append(int(gi))
+
+            if gi not in seen_local:
+                nodes_seen_in_order.append(int(gi))
+                seen_local.add(int(gi))
+
+        if not nodes_seen_in_order:
+            skipped_all_unmapped += 1
+            continue
+
+        final_cost = _safe_float(raw_cost)
+        if final_cost is None:
+            final_cost = _compute_cost_from_mapped_seq(mapped_seq, W)
+
+        final_eff = None
+        if final_cost is not None and final_cost > 0:
+            final_eff = 1.0 / float(final_cost)
+
+        idx_paths.append(nodes_seen_in_order)
+        idx_paths_seq.append(mapped_seq)
+        path_costs.append(final_cost)
+        path_efficiencies.append(final_eff)
+        path_rows_meta.append({
+            "path_index_1based": len(idx_paths),
+            "pair_key": rec["pair_key"],
+            "source_entry_index_0based": rec["source_entry_index_0based"],
+        })
+
+    K = len(idx_paths)
+    if K == 0:
+        _log_local(f"⚠ PathSimilarity: no valid mapped paths for {pdb_key}\n")
+        return []
+
+    # ---------------- similarity + clustering ----------------
+    # Node-incidence cosine similarity:
+    # if two paths pass through largely the same nodes, they are similar.
+    # Path length should not dominate, so cosine is used.
+
+    M = np.zeros((K, n_nodes), dtype=np.uint8)
+    for i, nodes in enumerate(idx_paths):
+        for gi in nodes:
+            if 0 <= gi < n_nodes:
+                M[i, gi] = 1
+
+    S = _cosine_similarity_rows_binary(M)
+    np.fill_diagonal(S, 1.0)
+
+    clusters = _connected_components_from_threshold(
+        S,
+        threshold=similarity_threshold
+    )
+
+    pdb_base = _base_only(pdb_key) if "_base_only" in globals() else str(pdb_key).replace(os.sep, "_")
+    outs = []
+
+    # ---------------- cluster/path membership maps ----------------
+    path_to_cluster = {}
+    representative_indices = set()
+
+    for cid, members in enumerate(clusters, start=1):
+        for m in members:
+            path_to_cluster[int(m)] = int(cid)
+        rep_idx = _cluster_medoid_cost_weighted(S, members, path_costs)
+        if rep_idx is not None:
+            representative_indices.add(int(rep_idx))
+
+    # ---------------- cluster summary ----------------
+    cluster_rows = []
+    for cid, members in enumerate(clusters, start=1):
+        rep_idx = _cluster_medoid_cost_weighted(S, members, path_costs)
+        rep_nodes = idx_paths_seq[rep_idx] if rep_idx is not None else []
+        rep_labels = [idx_to_label.get(gi, str(gi)) for gi in rep_nodes]
+
+        if len(members) > 1:
+            sub = S[np.ix_(members, members)]
+            iu = np.triu_indices_from(sub, k=1)
+            vals = sub[iu]
+            mean_within = float(np.mean(vals)) if len(vals) > 0 else 1.0
+            min_within = float(np.min(vals)) if len(vals) > 0 else 1.0
+            max_within = float(np.max(vals)) if len(vals) > 0 else 1.0
+        else:
+            mean_within = 1.0
+            min_within = 1.0
+            max_within = 1.0
+
+        member_pairs = sorted(set(path_rows_meta[m]["pair_key"] for m in members if 0 <= m < len(path_rows_meta)))
+
+        cluster_cost_vals = [path_costs[m] for m in members if 0 <= m < len(path_costs) and path_costs[m] is not None]
+        cluster_eff_vals = [path_efficiencies[m] for m in members if 0 <= m < len(path_efficiencies) and path_efficiencies[m] is not None]
+
+        rep_cost = path_costs[rep_idx] if (rep_idx is not None and 0 <= rep_idx < len(path_costs)) else None
+        rep_eff = path_efficiencies[rep_idx] if (rep_idx is not None and 0 <= rep_idx < len(path_efficiencies)) else None
+
+        cluster_rows.append({
+            "cluster_id": cid,
+            "cluster_size": len(members),
+            "representative_rule": "cost_weighted_medoid_by_mean_cosine_similarity",
+            "representative_path_index_1based": (rep_idx + 1) if rep_idx is not None else None,
+            "representative_pair": path_rows_meta[rep_idx]["pair_key"] if rep_idx is not None else "",
+            "representative_path_nodes": " -> ".join(rep_labels),
+            "representative_cost": round(rep_cost, 6) if rep_cost is not None else None,
+            "representative_efficiency": round(rep_eff, 6) if rep_eff is not None else None,
+            "mean_within_similarity": round(mean_within, 6),
+            "min_within_similarity": round(min_within, 6),
+            "max_within_similarity": round(max_within, 6),
+            "min_cost_in_cluster": round(float(np.min(cluster_cost_vals)), 6) if cluster_cost_vals else None,
+            "mean_cost_in_cluster": round(float(np.mean(cluster_cost_vals)), 6) if cluster_cost_vals else None,
+            "max_cost_in_cluster": round(float(np.max(cluster_cost_vals)), 6) if cluster_cost_vals else None,
+            "min_efficiency_in_cluster": round(float(np.min(cluster_eff_vals)), 6) if cluster_eff_vals else None,
+            "mean_efficiency_in_cluster": round(float(np.mean(cluster_eff_vals)), 6) if cluster_eff_vals else None,
+            "max_efficiency_in_cluster": round(float(np.max(cluster_eff_vals)), 6) if cluster_eff_vals else None,
+            "member_pairs": "; ".join(member_pairs),
+            "member_path_indices_1based": ",".join(str(int(x) + 1) for x in members),
+        })
+
+    # ---------------- path table ----------------
+    path_rows = []
+    for i, nodes in enumerate(idx_paths_seq, start=1):
+        labels_i = [idx_to_label.get(gi, str(gi)) for gi in nodes]
+        cost_i = path_costs[i - 1] if (i - 1) < len(path_costs) else None
+        eff_i = path_efficiencies[i - 1] if (i - 1) < len(path_efficiencies) else None
+        path_rows.append({
+            "path_index_1based": i,
+            "pair_key": path_rows_meta[i - 1]["pair_key"],
+            "source_entry_index_0based": path_rows_meta[i - 1]["source_entry_index_0based"],
+            "cluster_id": path_to_cluster.get(i - 1, None),
+            "is_representative": "yes" if (i - 1) in representative_indices else "no",
+            "node_count": len(nodes),
+            "path_cost": round(cost_i, 6) if cost_i is not None else None,
+            "path_efficiency": round(eff_i, 6) if eff_i is not None else None,
+            "nodes": " -> ".join(labels_i),
+        })
+
+    # ---------------- outputs ----------------
+
+    # ---------------- figures ----------------
+
+    # 1) Path-order similarity heatmap
+    out_png_ordered = os.path.join(
+        out_dir,
+        f"PATHSIM__COSINE_ORDERED__{pdb_base}__K{K}__thr{similarity_threshold:.2f}.png"
+    )
+    _draw_path_order_similarity_heatmap(
+        S=S,
+        out_png=out_png_ordered,
+        pdb_base=pdb_base,
+        K=K,
+        similarity_threshold=similarity_threshold,
+    )
+    outs.append(out_png_ordered)
+
+    # 2) Cluster size distribution
+    out_bar = os.path.join(
+        out_dir,
+        f"PATHSIM__CLUSTER_SIZES__{pdb_base}__K{K}__thr{similarity_threshold:.2f}.png"
+    )
+    _draw_cluster_size_plot(
+        clusters=clusters,
+        out_png=out_bar,
+        pdb_base=pdb_base,
+        K=K,
+        similarity_threshold=similarity_threshold,
+    )
+    outs.append(out_bar)
+
+    # 3) Representative path summary panel
+    out_repr = os.path.join(
+        out_dir,
+        f"PATHSIM__REPRESENTATIVE_PATHS__{pdb_base}__K{K}__thr{similarity_threshold:.2f}.png"
+    )
+    _draw_representative_path_summary(
+        cluster_rows=cluster_rows,
+        out_png=out_repr,
+        pdb_base=pdb_base,
+        top_n=5,
+    )
+    outs.append(out_repr)
+    # xlsx summary
+    out_xlsx = os.path.join(
+        out_dir,
+        f"PATHSIM__SUMMARY__{pdb_base}__K{K}__thr{similarity_threshold:.2f}.xlsx"
+    )
+
+    with pd.ExcelWriter(out_xlsx, engine="xlsxwriter") as writer:
+        pd.DataFrame(cluster_rows).to_excel(writer, sheet_name="cluster_summary", index=False)
+
+        sim_df = pd.DataFrame(
+            S,
+            index=[f"path_{i+1}" for i in range(K)],
+            columns=[f"path_{i+1}" for i in range(K)],
+        )
+        sim_df.to_excel(writer, sheet_name="similarity_matrix")
+
+        pd.DataFrame(path_rows).to_excel(writer, sheet_name="path_nodes", index=False)
+
+    outs.append(out_xlsx)
+
+    # diagnostics
+    if write_diagnostics:
+        try:
+            diag = {
+                "pdb_key": str(pdb_key),
+                "pdb_base": pdb_base,
+
+                # input/path statistics
+                "paths_total": int(len(all_path_records)),
+                "paths_used": int(K),
+                "nodes_seen": int(total_nodes_seen),
+                "nodes_mapped": int(total_nodes_mapped),
+
+                # clustering info
+                "clustering_method": "threshold_graph_connected_components",
+                "similarity_threshold": float(similarity_threshold),
+
+                "n_clusters": int(len(clusters)),
+                "cluster_sizes": [int(len(c)) for c in clusters],
+
+                # cost source information
+                "cost_source_priority": [
+                    "path_entry_cost_field",
+                    "pdata_parallel_cost_list",
+                    "edgeweight_matrix_from_mapped_sequence",
+                ],
+                "edgeweight_matrix_found": bool(W is not None),
+
+                # mapping diagnostics
+                #"nodes_seen": int(total_nodes_seen),
+                #"nodes_mapped": int(total_nodes_mapped),
+                "unmapped_examples": unmapped_examples,
+                "out_of_range_examples": oor_examples,
+                "one_based_hint": bool(one_based_hint),
+                "skipped_all_unmapped": int(skipped_all_unmapped),
+
+                # outputs
+                "outputs": outs,
+            }
+            out_json = os.path.join(
+                out_dir,
+                f"PATHSIM__DIAG__{pdb_base}__thr{similarity_threshold:.2f}.json"
+            )
+            with open(out_json, "w", encoding="utf-8") as f:
+                json.dump(diag, f, indent=2)
+            outs.append(out_json)
+        except Exception:
+            pass
+
+    _log_local(
+        f"PathSimilarity {pdb_base}:\n"
+        f"  paths_total={len(all_path_records)} paths_used={K} skipped_all_unmapped={skipped_all_unmapped}\n"
+        f"  nodes_seen={total_nodes_seen} nodes_mapped={total_nodes_mapped} one_based_hint={one_based_hint}\n"
+        f"  threshold={similarity_threshold:.2f} clusters={len(clusters)}\n"
+        f"  edgeweight_matrix_found={bool(W is not None)}\n"
+        f"  out={out_png_ordered}\n"
+    )
+
+    return outs
+
+def _run_path_similarity_for_one_structure_segaware(
+    pdb_key,
+    paths_dict_2,
+    pdb_info_dict,
+    out_dir,
+    logger=None,
+    selected_pairs=None,
+    strict: bool = False,
+    similarity_threshold: float = 0.70,
+    write_diagnostics: bool = True,
+):
+    """
+    Path similarity for ONE structure.
+
+    Path-cluster logic
+    ------------------
+    1) Collect K-shortest paths for the selected source-sink pairs.
+    2) Preserve global node indices when already available; otherwise resolve
+       residue tokens to global indices with SEGNAME-aware uniqueness rules.
+    3) Build one binary node-incidence vector per path using unique node presence.
+    4) Compute pairwise cosine similarity between path-incidence vectors.
+    5) Connect path pairs with similarity >= threshold and define clusters as
+       connected components of that threshold graph.
+    6) Select a cost-weighted medoid representative from the real KSP paths.
+    7) Report both the real global-index path and human-readable residue labels.
     """
 
     import os
@@ -4423,78 +5839,74 @@ def run_path_similarity_for_one_structure(
         return uid_to_idx, uid_to_idx_noseg, chainrnic_to_idx, chainrn_to_idx, max_meta_idx_local
 
     def _token_node_to_idx(node, uid_to_idx, uid_to_idx_noseg, chainrnic_to_idx, chainrn_to_idx, n_nodes):
+        """Resolve a path node to the exact global node index.
+
+        Policy
+        ------
+        - Integer/global-index nodes are used directly.
+        - SEG:CHAIN:RES tokens are resolved strictly by SEGNAME.
+        - CHAIN:RES tokens ignore SEGNAME only when the chain/residue identity
+          is unique in this structure.
+        - Ambiguous SEGNAME-free tokens are rejected instead of choosing an
+          arbitrary residue.
+        """
+        # Already a real global index: preserve it exactly.
+        if not isinstance(node, (dict, tuple, list)):
+            gi_direct = _safe_int(node)
+            if gi_direct is not None and 0 <= gi_direct < n_nodes:
+                return int(gi_direct)
+
+        rec = None
+
         if isinstance(node, dict):
-            seg = str(node.get("segname") or node.get("seg") or "").strip()
-            ch = str(node.get("chain") or node.get("chain_id") or node.get("chainID") or "").strip().upper()
-            rn = node.get("residue_num") if "residue_num" in node else node.get("resid")
-            rn_i = _safe_int(rn) if rn is not None else None
-            ic = node.get("icode") or None
-            ic = str(ic).strip() if ic not in (None, "", " ") else None
-            if not ch or rn_i is None:
-                return None
+            rec = {
+                "segname": node.get("segname") or node.get("seg"),
+                "chain": node.get("chain") or node.get("chain_id") or node.get("chainID"),
+                "residue_num": node.get("residue_num") if "residue_num" in node else node.get("resid"),
+                "icode": node.get("icode"),
+            }
 
-            gi = uid_to_idx.get((seg, ch, rn_i, ic))
-            if gi is None:
-                gi = uid_to_idx.get((seg, ch, rn_i, None))
-            if gi is None:
-                gi = uid_to_idx_noseg.get(("", ch, rn_i, ic))
-            if gi is None:
-                gi = uid_to_idx_noseg.get(("", ch, rn_i, None))
-            if gi is None:
-                gi = chainrnic_to_idx.get((ch, rn_i, ic))
-            if gi is None:
-                gi = chainrnic_to_idx.get((ch, rn_i, None))
-            if gi is None:
-                gi = chainrn_to_idx.get((ch, rn_i))
-            if gi is None:
-                return None
+        elif isinstance(node, (tuple, list)):
+            # Backward-compatible tuple forms:
+            #   (chain, resnum)
+            #   (chain, resnum, icode)
+            #   (seg, chain, resnum, icode)
+            if len(node) >= 4:
+                rec = {
+                    "segname": node[0],
+                    "chain": node[1],
+                    "residue_num": node[2],
+                    "icode": node[3],
+                }
+            elif len(node) >= 2:
+                rec = {
+                    "segname": None,
+                    "chain": node[0],
+                    "residue_num": node[1],
+                    "icode": node[2] if len(node) >= 3 else None,
+                }
 
-            gi = int(gi)
-            return gi if 0 <= gi < n_nodes else None
-
-        if isinstance(node, (tuple, list)) and len(node) >= 2:
-            try:
-                ch = str(node[0]).strip().upper()
-                rn_i = _safe_int(node[1])
-                ic = None
-                if len(node) >= 3 and node[2] not in (None, "", " "):
-                    ic = str(node[2]).strip()
-                if ch and rn_i is not None:
-                    gi = chainrnic_to_idx.get((ch, rn_i, ic))
-                    if gi is None:
-                        gi = chainrnic_to_idx.get((ch, rn_i, None))
-                    if gi is None:
-                        gi = chainrn_to_idx.get((ch, rn_i))
-                    if gi is None:
-                        return None
-                    gi = int(gi)
-                    return gi if 0 <= gi < n_nodes else None
-            except Exception:
-                return None
-
-        if isinstance(node, str):
-            s = node.strip()
-            seg, ch, rn_i, ic = _split_token_any(s)
+        elif isinstance(node, str):
+            seg, ch, rn_i, ic = _split_token_any(node)
             if ch and rn_i is not None:
-                gi = uid_to_idx.get((seg, ch, rn_i, ic))
-                if gi is None:
-                    gi = uid_to_idx.get((seg, ch, rn_i, None))
-                if gi is None:
-                    gi = uid_to_idx_noseg.get(("", ch, rn_i, ic))
-                if gi is None:
-                    gi = uid_to_idx_noseg.get(("", ch, rn_i, None))
-                if gi is None:
-                    gi = chainrnic_to_idx.get((ch, rn_i, ic))
-                if gi is None:
-                    gi = chainrnic_to_idx.get((ch, rn_i, None))
-                if gi is None:
-                    gi = chainrn_to_idx.get((ch, rn_i))
-                if gi is None:
-                    return None
-                gi = int(gi)
-                return gi if 0 <= gi < n_nodes else None
+                rec = {
+                    "segname": seg or None,
+                    "chain": ch,
+                    "residue_num": rn_i,
+                    "icode": ic,
+                }
 
-        return None
+        if not rec:
+            return None
+
+        gi = resolve_residue_to_global_index(rec, global_index_map)
+        if gi is None:
+            return None
+        try:
+            gi = int(gi)
+        except Exception:
+            return None
+        return gi if 0 <= gi < n_nodes else None
 
     def _convert_index_path_to_tokens(index_path, pdb_data_local):
         """
@@ -4592,6 +6004,10 @@ def run_path_similarity_for_one_structure(
     uid_to_idx, uid_to_idx_noseg, chainrnic_to_idx, chainrn_to_idx, max_meta_idx = _build_token_to_index_lookup(pdb_data)
     n_nodes = max(n_adj, (max_meta_idx + 1) if max_meta_idx >= 0 else n_adj)
 
+    # One authoritative residue->global-index map for token-based paths.
+    # It is SEGNAME-aware and marks chain-only collisions as ambiguous.
+    global_index_map = _build_global_index_map(pdb_data)
+
     # ---------------- collect selected paths ----------------
     if selected_pairs:
         sel = set(selected_pairs)
@@ -4642,51 +6058,31 @@ def run_path_similarity_for_one_structure(
         raw_path = rec["raw_path"]
         raw_cost = rec["raw_cost"]
 
-        is_all_indices = True
-        tmp_index_path = []
-
+        index_path = []
         for x in raw_path:
             total_nodes_seen += 1
-            gi = _safe_int(x)
-
+            gi = _token_node_to_idx(
+                x,
+                uid_to_idx=uid_to_idx,
+                uid_to_idx_noseg=uid_to_idx_noseg,
+                chainrnic_to_idx=chainrnic_to_idx,
+                chainrn_to_idx=chainrn_to_idx,
+                n_nodes=n_nodes,
+            )
             if gi is None:
-                is_all_indices = False
-                break
+                if len(unmapped_examples) < 20:
+                    unmapped_examples.append(str(x))
+                continue
 
             if not (0 <= gi < n_nodes):
-                is_all_indices = False
-                break
+                if len(oor_examples) < 20:
+                    oor_examples.append(str(gi))
+                if strict:
+                    raise ValueError(f"Node index out of range: {gi} (n_nodes={n_nodes})")
+                continue
 
-            tmp_index_path.append(int(gi))
-
-        if is_all_indices:
-            index_path = tmp_index_path
-            total_nodes_mapped += len(index_path)
-        else:
-            index_path = []
-            for x in raw_path:
-                gi = _token_node_to_idx(
-                    x,
-                    uid_to_idx=uid_to_idx,
-                    uid_to_idx_noseg=uid_to_idx_noseg,
-                    chainrnic_to_idx=chainrnic_to_idx,
-                    chainrn_to_idx=chainrn_to_idx,
-                    n_nodes=n_nodes,
-                )
-                if gi is None:
-                    if len(unmapped_examples) < 20:
-                        unmapped_examples.append(str(x))
-                    continue
-
-                if not (0 <= gi < n_nodes):
-                    if len(oor_examples) < 20:
-                        oor_examples.append(str(gi))
-                    if strict:
-                        raise ValueError(f"Node index out of range: {gi} (n_nodes={n_nodes})")
-                    continue
-
-                index_path.append(int(gi))
-                total_nodes_mapped += 1
+            index_path.append(int(gi))
+            total_nodes_mapped += 1
 
         if not index_path:
             skipped_all_unmapped += 1
@@ -4785,6 +6181,7 @@ def run_path_similarity_for_one_structure(
             "representative_rule": "cost_weighted_medoid_by_mean_cosine_similarity",
             "representative_path_index_1based": (rep_idx + 1) if rep_idx is not None else None,
             "representative_pair": path_rows_meta[rep_idx]["pair_key"] if rep_idx is not None else "",
+            "representative_global_indices": " -> ".join(str(x) for x in (real_index_paths[rep_idx] if rep_idx is not None else [])),
             "representative_path_nodes": " -> ".join(rep_tokens),
             "representative_cost": round(rep_cost, 6) if rep_cost is not None else None,
             "representative_efficiency": round(rep_eff, 6) if rep_eff is not None else None,
@@ -4816,6 +6213,7 @@ def run_path_similarity_for_one_structure(
             "node_count_real_path": len(real_index_paths[i - 1]),
             "path_cost": round(cost_i, 6) if cost_i is not None else None,
             "path_efficiency": round(eff_i, 6) if eff_i is not None else None,
+            "global_indices": " -> ".join(str(x) for x in real_index_paths[i - 1]),
             "nodes": " -> ".join(token_path),
         })
 
@@ -4900,8 +6298,9 @@ def run_path_similarity_for_one_structure(
                 "unmapped_examples": unmapped_examples,
                 "out_of_range_examples": oor_examples,
                 "skipped_all_unmapped": int(skipped_all_unmapped),
-                "path_input_policy": "use_global_indices_directly_if_already_present",
-                "display_label_policy": "convert_paths_to_residues",
+                "path_input_policy": "homogeneous node-to-global-index conversion for all path nodes; SEGNAME strict when supplied; chain-residue accepted only when unique",
+                "similarity_definition": "cosine similarity of binary unique-node incidence vectors",
+                "display_label_policy": "global index -> residue metadata",
                 "outputs": outs,
             }
             out_json = os.path.join(
@@ -4925,6 +6324,43 @@ def run_path_similarity_for_one_structure(
 
     return outs
 
+
+def run_path_similarity_for_one_structure(
+    pdb_key,
+    paths_dict_2,
+    pdb_info_dict,
+    out_dir,
+    logger=None,
+    selected_pairs=None,
+    strict: bool = False,
+    similarity_threshold: float = 0.70,
+    write_diagnostics: bool = True,
+):
+    """
+    Path-similarity dispatcher.
+
+    Historical/normal structures use the exact legacy token -> global-index ->
+    incidence pipeline that produced the validated benchmark clusters.
+    SEGNAME-collision structures use the strict SEGNAME-aware resolver.
+
+    In both modes, similarity remains cosine similarity of binary node-incidence
+    vectors and clustering remains threshold-graph connected components.
+    """
+    # One homogeneous path-node conversion pipeline is used for every structure.
+    # It resolves every path node through the same node -> global-index function
+    # before building the incidence matrix.  No separate integer-fast-path or
+    # mode-dependent clustering route is used here.
+    return _run_path_similarity_for_one_structure_legacy_exact(
+        pdb_key=pdb_key,
+        paths_dict_2=paths_dict_2,
+        pdb_info_dict=pdb_info_dict,
+        out_dir=out_dir,
+        logger=logger,
+        selected_pairs=selected_pairs,
+        strict=strict,
+        similarity_threshold=similarity_threshold,
+        write_diagnostics=write_diagnostics,
+    )
 
 def run_path_similarity_ensemble(
     paths_dict_2,
@@ -5098,9 +6534,11 @@ def _ensure_global_index_to_residue(pdb_data: dict) -> dict:
     rev = {}
     rcm = pdb_data.get("residue_chain_map", {}) or {}
 
-    for ch, residues in rcm.items():
-        ch = str(ch).strip()
+    for ch_key, residues in rcm.items():
         for r in residues:
+
+            ch = _real_chain_from_residue(r, ch_key)
+
             gi = r.get("index")
             if gi is None:
                 continue
@@ -5118,7 +6556,7 @@ def _ensure_global_index_to_residue(pdb_data: dict) -> dict:
                 ic = tail or None
             ic = ic.strip() if ic else None
 
-            # ✅ FIX: segname'i önce all_segnames'ten al (ribozom-safe)
+            # Prefer all_segnames when resolving SEGNAME in ribosome-safe mode
             seg = None
             all_segs = r.get("all_segnames") or []
             if all_segs:
@@ -5163,7 +6601,7 @@ def convert_paths_to_residues(paths_or_paths_dict, pdb_data_or_pdb_info_dict):
         Returns: same schema as paths_dict but with paths converted to token lists.
     """
     # -------- Mode (B): full paths_dict --------
-    if isinstance(paths_or_paths_dict, dict) and any(isinstance(v, dict) for v in paths_or_paths_dict.values()):
+    if isinstance(paths_or_paths_dict, dict):
         paths_dict = paths_or_paths_dict or {}
         pdb_info_dict = pdb_data_or_pdb_info_dict or {}
 
@@ -5507,14 +6945,14 @@ def apply_transpose_clamp(midi_no: int, transpose: int, clamp_low: int, clamp_hi
 
 
 def _midi_to_note_name(m: int) -> str:
-    # MIDI 60 = C4 varsayımı
+    # MIDI note 60 corresponds to C4
     n = NOTE_NAMES[m % 12]
     octv = (m // 12) - 1
     return f"{n}{octv}"
 
 
 def _property_root(dim: str, grp: str, base_oct: int) -> str:
-    # Base kök C<oct>, sınıfa göre yarım ses kaydır
+    # Use C<octave> as the base root and shift by class-specific semitone offsets
     base = note_to_midi(f"C{int(base_oct)}")
     semi = DEFAULT_PROP_SEMITONE_OFFSETS.get(dim, {}).get(grp, 0)
     m = base + int(semi)
@@ -5549,20 +6987,19 @@ def aa_mapping_to_residue_mapping(
     logger=None
 ):
     """
-    Map each residue token in paths_dict_2 to a 1-letter (veya sınıf) kodu.
+    Map each residue token in paths_dict_2 to a one-letter residue code or property class.
 
-    Beklenen token formatları örnek:
+    Accepted token examples:
         - "C:1492"
         - "EB:C:1492"
 
-    Mantık:
-        1) Her PDB için residue_chain_map'ten şu key'leri üretir:
+    Logic:
+        1) Build token keys from residue_chain_map for each structure:
              - "C:1492"
-             - "EB:C:1492"   (segname varsa)
-        2) Path token’ı için önce tam eşleşme denenir,
-           olmazsa sadeleştirilmiş "CHAIN:resnum" denenir.
-        3) Eğer dimension verilirse: aa3_to_group(AA3, dimension) kullanılır.
-           Aksi halde: aa_map[AA3] kullanılır.
+             - "EB:C:1492"   (when SEGNAME is present)
+        2) Try exact path-token matching first; if unavailable,
+           retry with the simplified "CHAIN:resnum" form.
+        3) If dimension is provided, use aa3_to_group(AA3, dimension); otherwise use aa_map[AA3].
     """
     residue_map = {}
     total_tokens = 0
@@ -5576,7 +7013,7 @@ def aa_mapping_to_residue_mapping(
         pdb_data = (pdb_info_dict or {}).get(canon, {}) or {}
         rcm = pdb_data.get('residue_chain_map', {}) or {}
 
-        # ── 1) PDB içinden token -> AA3 haritasını kur ─────────────────────
+        # ── 1) Build the token -> AA3 map for this structure ─────────────────
         res2aa3 = {}
 
         for ch, residues in rcm.items():
@@ -5607,7 +7044,7 @@ def aa_mapping_to_residue_mapping(
                         seg_key = f"{seg}:{simple_key}"
                         res2aa3[seg_key] = resname
 
-        # ── 2) Path token’larını sınıfa çevir ─────────────────────────────
+        # ── 2) Convert path tokens to residue/property classes ─────────────
         for _, pdata in (pairs or {}).items():
             for path in ((pdata or {}).get("paths") or []):
                 for token in (path or []):
@@ -5616,7 +7053,7 @@ def aa_mapping_to_residue_mapping(
                     tok_str = str(token).strip()
                     aa3 = res2aa3.get(tok_str)
 
-                    # b) bulunamadıysa, sadeleştirerek dene
+                    # b) If not found, retry with a simplified token
                     if aa3 is None:
                         parts = tok_str.split(":")
                         if len(parts) == 2:
@@ -5688,9 +7125,9 @@ def aa_mapping_to_residue_mapping(
 
 
 def triad_from_root(root_note: str, triad_name: str) -> list[str]:
-    """root 'C4' gibi; preset aralıklara göre akor notalarını döndür."""
+    """Return chord notes for a root such as C4 using the selected interval preset."""
     intervals = get_triad_presets().get(triad_name, [0])
-    # root'u MIDI'ye çevir, aralık ekle, geri string’e çevir
+    # Convert the root to MIDI, add intervals, then convert back to note names
     root_midi = note_to_midi(root_note)
     notes = []
     for iv in intervals:
@@ -5736,7 +7173,7 @@ def compute_all_normalized_frequencies(paths_dict_2, pdb_info_dict=None, k=None)
                     presence[tok] += 1
 
         if total_paths > 0:
-            # ✅ yüzdeye çevir (0–100)
+            # Convert to percent scale (0–100)
             norm_map = {tok: (presence[tok] / float(total_paths)) * 100.0 for tok in presence}
         else:
             norm_map = {}
@@ -5881,19 +7318,24 @@ def build_property_matrix_for_pdb(
     }
     # ------------------------------------------------------------------
     # 1) residue_chain_map -> metadata index
-    #    segname mismatch olabileceği için hem segli hem segsiz key tut
+    # Keep both SEGNAME-aware and SEGNAME-free keys to tolerate cross-structure SEGNAME differences
     # ------------------------------------------------------------------
     meta_index = {}
 
     for ch_key, residues in rcm.items():
-        ch_u = _real_chain_from_residue(r, ch_key).upper()
 
         for r in (residues or []):
-            rn_digits = _digits_only_local(r.get("residue_num", r.get("resSeq", "")))
+            ch_u = _real_chain_from_residue(r, ch_key).upper()
+
+            rn_digits = _digits_only_local(
+                r.get("residue_num", r.get("resSeq", ""))
+            )
             if rn_digits is None:
                 continue
 
-            aa3 = str(r.get("residue_name", r.get("resname", "UNK"))).upper()[:3]
+            aa3 = str(
+                r.get("residue_name", r.get("resname", "UNK"))
+            ).upper()[:3]
 
             seg = r.get("segname", "")
             seg_u = _norm_seg(seg)
@@ -5914,14 +7356,12 @@ def build_property_matrix_for_pdb(
                 "AA3": aa3,
             }
 
-            # primary: segsiz lookup
             meta_index[("", ch_u, rn_digits, ic_u)] = rec_meta
-            # secondary: segli lookup
             meta_index[(seg_u, ch_u, rn_digits, ic_u)] = rec_meta
 
     # ------------------------------------------------------------------
     # 2) freq_map tokens -> rows
-    #    Artık rcm'den değil, doğrudan freq_map'ten başlıyoruz
+    # Start directly from freq_map rather than residue_chain_map
     # ------------------------------------------------------------------
     rows = []
 
@@ -5946,7 +7386,7 @@ def build_property_matrix_for_pdb(
         if freq < freq_threshold:
             continue
 
-        # metadata lookup: önce segsiz, sonra segli fallback
+        # Metadata lookup: try SEGNAME-free first, then SEGNAME-aware fallback
         meta = meta_index.get(("", ch_u, rn_digits, ic_u))
         if meta is None and ic_u is not None:
             meta = meta_index.get(("", ch_u, rn_digits, None))
@@ -6020,11 +7460,63 @@ def _add_property_legend(ax, ncols=4):
         handlelength=1.4,
     )
 
+def save_property_legend_png(out_png, dimensions=None, ncols=4):
+    """
+    Save the shared Property Tracks legend as a separate PNG.
+    Individual property-track figures can therefore remain legend-free.
+    """
+
+    dimensions = dimensions or [
+        "hydrophobicity",
+        "charge",
+        "aromaticity",
+        "polarity",
+    ]
+
+    handles = []
+
+    # Property group legends
+    for dim in dimensions:
+        groups = PROP_COLORS.get(dim, {}) or {}
+
+        for group_name, color in groups.items():
+            label = f"{dim}: {group_name}"
+
+            handles.append(
+                Patch(
+                    facecolor=color,
+                    edgecolor="none",
+                    label=label
+                )
+            )
+
+    if not handles:
+        return
+
+    # Separate legend-only figure
+    fig = plt.figure(figsize=(12, 3))
+
+    fig.legend(
+        handles=handles,
+        loc="center",
+        ncol=ncols,
+        frameon=False,
+        fontsize=10
+    )
+
+    fig.savefig(
+        out_png,
+        dpi=300,
+        bbox_inches="tight",
+        pad_inches=0.15
+    )
+
+    plt.close(fig)
 
 def plot_property_tracks_single(df, dimensions, out_png, min_score=0):
     """
-    Tek bir PDB için property track çizimi.
-    Legend artık figürün en altında düzgün oturur, x-ekseni alta kaydırıldı.
+    Plot property tracks for one structure.
+    The legend is placed below the figure and the x-axis is positioned for readability.
     """
 
     if df is None or df.empty:
@@ -6051,25 +7543,25 @@ def plot_property_tracks_single(df, dimensions, out_png, min_score=0):
     dims_full = ["FreqScore"] + list(dimensions)
     n_rows = len(dims_full)
 
-    # Figür boyutunu kontrollü bir şekilde aç
+    # Expand the figure size in a controlled manner
     width  = max(6.0, n_cols * 0.28)
     height = max(3.6, n_rows * 0.75)
 
     fig = plt.figure(figsize=(width, height))
 
-    # Ana ekseni üstte bırakıp altta boşluk açıyoruz
+    # Leave space below the main axes
     ax = fig.add_axes([0.10, 0.30, 0.88, 0.68])   # left, bottom, width, height
 
     ax.set_xlim(0, n_cols)
     ax.set_ylim(0, n_rows)
 
-    # X eksenini aşağı alıyoruz
+    # Position the x-axis lower
     ax.set_xticks([i + 0.5 for i in range(n_cols)])
     ax.set_xticklabels(x_labels, rotation=90, fontsize=16)
 
     ax.set_yticks([])
 
-    # Hücreleri çiz
+    # Draw property cells
     for row_idx, dim in enumerate(dims_full):
 
         ax.text(-0.5, row_idx + 0.5, dim,
@@ -6095,22 +7587,27 @@ def plot_property_tracks_single(df, dimensions, out_png, min_score=0):
                         ha="center", va="center", fontsize=10,
                         color="white" if sc >= 6 else "black")
 
-    # X eksenini düzgün yaz
+    # Format x-axis labels
     if "PDB" in df.columns:
         ax.set_xlabel(f"Residues — {df['PDB'].iloc[0]}", fontsize=14)
     else:
         ax.set_xlabel("Residues", fontsize=14)
 
 
-    _add_property_legend(ax)
+    #_add_property_legend(ax)
     fig.subplots_adjust(
         left=0.10,
         right=0.99,
         top=0.98,
-        bottom=0.25  # single için legend'e biraz daha yer
+        bottom=0.25  # extra space for the legend in single-structure plots
     )
-    # Artık tight_layout kullanmıyoruz; legend zaten aşağıda sabit.
-    fig.savefig(out_png, dpi=300)
+    # Save the full figure bounds so long, rotated residue labels are not clipped.
+    fig.savefig(
+        out_png,
+        dpi=300,
+        bbox_inches="tight",
+        pad_inches=0.20
+    )
     plt.close(fig)
 
 def _format_plot_residue_name(chain, resnum, aa3="", segname="", icode=None):
@@ -6134,7 +7631,7 @@ def _format_plot_residue_name(chain, resnum, aa3="", segname="", icode=None):
     except Exception:
         rn_s = str(resnum).strip()
 
-    # insertion code varsa residue numarasına ekle
+    # Append the insertion code to the residue number when present
     rn_s = f"{rn_s}{ic}" if ic else rn_s
 
     core = f"{aa3_u}{rn_s}"
@@ -6475,11 +7972,16 @@ def plot_property_tracks_multi(
 
     ax.set_xlabel("Residues", fontsize=14)
 
-    _add_property_legend(ax)
+    #_add_property_legend(ax)
 
     fig.subplots_adjust(left=0.10, right=0.99, top=0.98, bottom=0.28)
     os.makedirs(os.path.dirname(out_png), exist_ok=True)
-    fig.savefig(out_png, dpi=300, bbox_inches="tight")
+    fig.savefig(
+        out_png,
+        dpi=300,
+        bbox_inches="tight",
+        pad_inches=0.25
+    )
     plt.close(fig)
 
 
@@ -6683,8 +8185,8 @@ class MusicOptions:
     program: int = 0
     velocity_mode: str = "by_frequency"   # constant | by_frequency
     velocity_constant: int = 90
-    velocity_min: int = 30                # NEW: by_frequency alt sınır
-    velocity_max: int = 110               # NEW: by_frequency üst sınır
+    velocity_min: int = 30                # lower bound for by_frequency velocity
+    velocity_max: int = 110               # upper bound for by_frequency velocity
     freq_scope: str = "per_pdb"           # per_path | per_pair | per_pdb
 
     # Pitch
@@ -7040,7 +8542,7 @@ def generate_audio(jobname, paths_dict_2, residue_note_map,
 
         return [], None, mode
 
-    # Velocity hesaplayıcı
+    # Velocity calculator
     def _vel(freq_val: float) -> int:
         try:
             return int(_pick_velocity(options, freq_val))
@@ -7081,7 +8583,7 @@ def generate_audio(jobname, paths_dict_2, residue_note_map,
         display = f"{ch}:{rn}{ic_suffix}" if seg == default_seg else strict_key
         return strict_key, display
 
-    # Nota yazıcı + event kaydı
+    # Note writer and event logging
     def _emit_token_list(mid, track, start_t_beats, token_list, pdb_key, freq_map_or_none, out_path, meta):
         t = float(start_t_beats)
         events = event_logs.setdefault(out_path, [])
@@ -7291,7 +8793,7 @@ def _set_b_all(atom, b):
 
     b = float(b)
     if hasattr(atom, "is_disordered") and atom.is_disordered():
-        # tüm altloc varyantlarına yaz
+        # Write to all alternate-location variants
         for alt in atom.child_dict.values():
             alt.set_bfactor(b)
     else:
@@ -8347,333 +9849,6 @@ rebuildScene();
 #####
 
 
-# -----------------------------
-# JSON helpers
-# -----------------------------
-def _json_dump(path, obj):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=False, indent=2)
-
-
-def _json_load(path, default=None):
-    if not path or not os.path.exists(path):
-        return default
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def _job_root_from_jobname(jobname):
-    # You already have _resolve_job_dir(jobname) in your codebase
-    # Keep using that to avoid breaking existing layout.
-    return _resolve_job_dir(jobname)
-
-
-JOB_SCHEMA_VERSION = 1
-
-def save_job_snapshot(jobname, gui, also_save_run=False, run_label=None):
-    """
-    Saves job_state + key dicts into the job folder ONLY when this function is called.
-
-    Important:
-    - This function is intended for manual Save Job.
-    - Do NOT call this from autosave_job if you do not want automatic JSON/cache output.
-    - Excel/PNG/PDB outputs are not affected by this function.
-    """
-    job_dir = _job_root_from_jobname(jobname)
-    os.makedirs(job_dir, exist_ok=True)
-
-    results_dir = os.path.join(job_dir, "results")
-    os.makedirs(results_dir, exist_ok=True)
-
-    # --- Manifest
-    manifest_path = os.path.join(job_dir, "job_manifest.json")
-    manifest = _json_load(manifest_path, default=None)
-
-    if not manifest:
-        manifest = {
-            "schema_version": JOB_SCHEMA_VERSION,
-            "jobname": jobname,
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-        }
-
-    manifest["last_saved_at"] = datetime.now().isoformat(timespec="seconds")
-    _json_dump(manifest_path, manifest)
-
-    # --- State
-    state = collect_job_state_from_gui(gui, jobname)
-    _json_dump(os.path.join(job_dir, "job_state.json"), state)
-
-    # --- Big dicts
-    if getattr(gui, "pdb_info_dict", None):
-        safe_pdb_info = _sanitize_pdb_info_dict(gui.pdb_info_dict)
-        _json_dump(os.path.join(results_dir, "pdb_info_dict.json"), safe_pdb_info)
-
-    if getattr(gui, "paths_dict_2", None):
-        _json_dump(os.path.join(results_dir, "paths_dict_2.json"), gui.paths_dict_2)
-
-    if getattr(gui, "all_normalized_frequencies", None):
-        _json_dump(
-            os.path.join(results_dir, "normalized_frequencies.json"),
-            gui.all_normalized_frequencies
-        )
-
-    # --- Optional run snapshot, only if explicitly requested
-    if also_save_run:
-        save_run_snapshot(jobname, gui, run_label=run_label)
-
-    return job_dir
-
-def list_runs(jobname):
-    job_dir = _job_root_from_jobname(jobname)
-    runs_dir = os.path.join(job_dir, "runs")
-    if not os.path.isdir(runs_dir):
-        return []
-
-    out = []
-    for run_id in sorted(os.listdir(runs_dir)):
-        cfg = os.path.join(runs_dir, run_id, "run_config.json")
-        if os.path.exists(cfg):
-            out.append((run_id, cfg))
-    return out
-
-
-def save_run_snapshot(jobname, gui, run_label=None):
-    """
-    Creates a run folder and stores run_config + results dicts (JSON-safe).
-    Enables: open old job and regenerate music / recompute with same workspace.
-    """
-    import os
-    from datetime import datetime
-
-    job_dir = _job_root_from_jobname(jobname)
-    run_id = _now_run_id()
-
-    if run_label:
-        run_label = "".join(c for c in str(run_label) if c.isalnum() or c in ("-", "_"))[:40]
-        run_id = f"{run_id}_{run_label}"
-
-    run_dir = os.path.join(job_dir, "runs", run_id)
-    os.makedirs(run_dir, exist_ok=True)
-
-    # run_config: keep it small and safe
-    inputs = {}
-    try:
-        st = collect_job_state_from_gui(gui, jobname)
-        inputs = (st or {}).get("inputs", {}) or {}
-    except Exception:
-        inputs = {}
-
-    run_config = {
-        "run_id": run_id,
-        "saved_at": datetime.now().isoformat(timespec="seconds"),
-        "inputs": _json_safe(inputs),
-        "stage": getattr(gui, "last_completed_stage", None),
-    }
-    _json_dump(os.path.join(run_dir, "run_config.json"), run_config)
-
-    # paths_dict_2
-    if getattr(gui, "paths_dict_2", None):
-        _json_dump(
-            os.path.join(run_dir, "paths_dict_2.json"),
-            _json_safe(gui.paths_dict_2, max_depth=18)  # paths can be nested
-        )
-
-    # normalized frequencies
-    if getattr(gui, "all_normalized_frequencies", None):
-        _json_dump(
-            os.path.join(run_dir, "normalized_frequencies.json"),
-            _json_safe(gui.all_normalized_frequencies, max_depth=18)
-        )
-
-    return run_dir
-
-
-def load_job_snapshot(job_dir, gui):
-    """
-    Loads job_state + dicts into GUI instance.
-    Restores workspace so user can continue (does not auto-run computations).
-    """
-    import os
-
-    state = _json_load(os.path.join(job_dir, "job_state.json"), default=None)
-    if not state:
-        raise FileNotFoundError(f"No job_state.json in: {job_dir}")
-
-    # Ensure gui.state exists
-    if not hasattr(gui, "state") or not isinstance(getattr(gui, "state", None), dict):
-        gui.state = {}
-
-    # Restore main dicts
-    pdb_info = _json_load(os.path.join(job_dir, "results", "pdb_info_dict.json"), default=None)
-    paths2   = _json_load(os.path.join(job_dir, "results", "paths_dict_2.json"), default=None)
-    freqs    = _json_load(os.path.join(job_dir, "results", "normalized_frequencies.json"), default=None)
-
-    if pdb_info is not None:
-        gui.pdb_info_dict = pdb_info
-    if paths2 is not None:
-        gui.paths_dict_2 = paths2
-    if freqs is not None:
-        gui.all_normalized_frequencies = freqs
-
-    # Stage restore
-    gui.last_completed_stage = state.get("stage")
-
-    # Restore lightweight inputs
-    inputs = state.get("inputs", {}) or {}
-    if isinstance(inputs, dict):
-        gui.state.update(inputs)
-
-    # remember jobname
-    gui.state["jobname"] = state.get("jobname") or gui.state.get("jobname") or os.path.basename(job_dir)
-
-    return state
-
-
-def _is_biopython_structure_obj(x):
-    # Avoid importing Bio.PDB here (keeps this helper light and safe)
-    t = type(x)
-    mod = getattr(t, "__module__", "") or ""
-    name = getattr(t, "__name__", "") or ""
-    # Covers Structure/Model/Chain/Residue/Atom and related Biopython classes
-    return mod.startswith("Bio.PDB") or name in {"Structure", "Model", "Chain", "Residue", "Atom"}
-
-
-def _json_safe(obj, *, max_depth=12, _depth=0, drop_keys=None):
-    """
-    Recursively convert an object into JSON-serializable data.
-
-    - Keeps basic JSON types
-    - Converts pathlib.Path -> str
-    - Converts numpy arrays -> list (WARNING: can be large; drop instead if needed)
-    - Converts numpy scalar -> python scalar
-    - Converts Bio.PDB objects -> marker string
-    - Dict keys -> str
-    - Supports drop_keys at any dict level
-    """
-    if drop_keys is None:
-        drop_keys = set()
-
-    if _depth > max_depth:
-        return "<max_depth_reached>"
-
-    # basic JSON types
-    if obj is None or isinstance(obj, (bool, int, float, str)):
-        return obj
-
-    # pathlib
-    try:
-        from pathlib import Path
-        if isinstance(obj, Path):
-            return str(obj)
-    except Exception:
-        pass
-
-    # numpy
-    try:
-        import numpy as np
-        if isinstance(obj, np.ndarray):
-            # Option A: keep (can be huge)
-            return obj.tolist()
-            # Option B: drop huge matrices
-            # return "<ndarray_dropped>"
-        if isinstance(obj, (np.integer, np.floating, np.bool_)):
-            return obj.item()
-    except Exception:
-        pass
-
-    # Biopython objects (Structure/Atom/Residue/...)
-    if _is_biopython_structure_obj(obj):
-        return f"<Bio.PDB:{type(obj).__name__}>"
-
-    # dict
-    if isinstance(obj, dict):
-        out = {}
-        for k, v in obj.items():
-            ks = k if isinstance(k, str) else str(k)
-            if ks in drop_keys:
-                continue
-            out[ks] = _json_safe(v, max_depth=max_depth, _depth=_depth + 1, drop_keys=drop_keys)
-        return out
-
-    # list/tuple/set
-    if isinstance(obj, (list, tuple, set)):
-        return [_json_safe(x, max_depth=max_depth, _depth=_depth + 1, drop_keys=drop_keys) for x in obj]
-
-    # fallback
-    try:
-        return str(obj)
-    except Exception:
-        return f"<unserializable:{type(obj).__name__}>"
-
-
-def _sanitize_pdb_info_dict(pdb_info_dict):
-    """
-    Returns a JSON-safe copy of pdb_info_dict:
-    - Drops heavy/non-serializable fields (structure, graphs, matrices, kdtrees, caches)
-    - Keeps file paths, chain lists, residue maps, etc.
-    """
-    if not isinstance(pdb_info_dict, dict):
-        return _json_safe(pdb_info_dict)
-
-    drop_keys = {
-        # Biopython / runtime objects
-        "structure", "biopython_structure", "parsed_structure",
-        "model_obj", "chain_obj", "residue_obj", "atom_obj",
-
-        # Graph / caches / heavy arrays
-        "graph", "G", "nx_graph", "networkx_graph",
-        "adj_matrix", "edgeweight_matrix", "distance_matrix",
-        "kd_tree", "kdtree", "coords_cache", "atom_cache",
-        "neighbor_cache", "contact_cache",
-    }
-
-    cleaned = {}
-    for pdb_key, info in pdb_info_dict.items():
-        if isinstance(info, dict):
-            c = {}
-            for k, v in info.items():
-                if k in drop_keys:
-                 continue
-                 c[k] = v
-            cleaned[pdb_key] = c
-        else:
-            cleaned[pdb_key] = info
-
-
-    return _json_safe(cleaned, drop_keys=drop_keys)
-
-
-def collect_job_state_from_gui(gui, jobname):
-
-    if not hasattr(gui, "state") or not isinstance(getattr(gui, "state", None), dict):
-        gui.state = {}
-
-    stage = getattr(gui, "last_completed_stage", None)
-
-
-    if stage is None:
-        stage = gui.state.get("last_completed_stage")
-
-
-    if stage is None:
-        stage = "unknown"
-
-    state = {
-        "schema_version": 1,
-        "jobname": jobname,
-        "saved_at": datetime.now().isoformat(timespec="seconds"),
-        "stage": stage,
-        "inputs": gui.state.copy(),
-        "has": {
-            "pdb_info_dict": bool(getattr(gui, "pdb_info_dict", None)),
-            "paths_dict_2": bool(getattr(gui, "paths_dict_2", None)),
-            "all_normalized_frequencies": bool(getattr(gui, "all_normalized_frequencies", None)),
-        }
-    }
-    return state
-
-
 def compute_global_normalized_frequencies(paths_dict_2, internal_only=True):
     """
     Compute GLOBAL/TOTAL percent frequencies (0..100) across ALL conformers in paths_dict_2.
@@ -8838,3 +10013,4 @@ def save_global_total_colored_reference_pdb(jobname, paths_dict_2, reference_pdb
         _log(logger, f"⚠️ GLOBAL TOTAL map could not be saved: {e}\n")
 
     return out_pdb
+

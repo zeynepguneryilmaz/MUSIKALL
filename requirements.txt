@@ -8,6 +8,9 @@ pandas
 networkx
 scikit-learn
 midiutil
-PySide6
 xlsxwriter
 mplcursors
+openpyxl
+tkinterweb
+py3Dmol
+PySide6

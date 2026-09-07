@@ -61,7 +61,7 @@ def main():
     win.show()
     ret = app.exec()
 
-    # WebEngine bazen process'i bırakmaz; kısa gecikmeli sert çıkış güvenlik ağı
+    # WebEngine can occasionally keep the process alive; use a short delayed hard-exit safeguard
     QTimer.singleShot(50, lambda: os._exit(0))
     sys.exit(ret)
 
