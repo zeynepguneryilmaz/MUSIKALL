@@ -554,9 +554,12 @@ def _load_pdb_files_legacy_exact(jobname, file_paths, pdb_info_dict=None, logger
         pdb_target_path = os.path.join(pdb_folder, pdb_name)
 
         try:
-            # 1) PDB'yi job klasörüne kopyala
+            # 1) Copy PDB into the job folder
             if os.path.abspath(file_path) != os.path.abspath(pdb_target_path):
                 shutil.copy2(file_path, pdb_target_path)
+
+            # 1.1) Remove hydrogens before parsing and network construction
+            remove_hydrogens_from_pdb_file(pdb_target_path)
 
             # 1.5) SEGNAME HARİTASI: PDB satırından oku
             # (chain_id, resseq_int, icode_str_or_None) -> set([segname_str, ...])
@@ -1003,55 +1006,43 @@ def _pdb_has_true_segname_collision(file_path):
 
 def load_pdb_files(jobname, file_paths, pdb_info_dict=None, logger=None):
     """
-    Compatibility-preserving loader.
+    Load PDB files using the manuscript-compatible residue-node representation.
 
-    - Normal structures: use the historical MUSIKALL loader exactly, preserving
-      the established global-index/node behavior and benchmark outputs.
-    - Structures with real SEGNAME collisions: use the SEGNAME-aware loader so
-      physically distinct residues are not collapsed.
+    SEGNAME information is retained as residue metadata and can still be used
+    in residue labels, source/sink definitions, mapping, colored PDB output,
+    and property-track output. However, SEGNAME is not allowed to change the
+    default graph node universe during benchmark/release analyses.
 
-    A per-structure flag records which node-identity mode was used.
+    This preserves the historical MUSIKALL graph definition used for the
+    manuscript examples while keeping hydrogen removal active.
     """
     if pdb_info_dict is None:
         pdb_info_dict = {}
 
-    for fp in (file_paths or []):
-        use_segaware = _pdb_has_true_segname_collision(fp)
-        before = set(pdb_info_dict.keys())
+    before = set(pdb_info_dict.keys())
 
-        if use_segaware:
-            _load_pdb_files_segaware(
-                jobname, [fp], pdb_info_dict=pdb_info_dict, logger=logger
-            )
-        else:
-            _load_pdb_files_legacy_exact(
-                jobname, [fp], pdb_info_dict=pdb_info_dict, logger=logger
-            )
+    _load_pdb_files_legacy_exact(
+        jobname,
+        file_paths,
+        pdb_info_dict=pdb_info_dict,
+        logger=logger
+    )
 
-        after = [k for k in pdb_info_dict.keys() if k not in before]
-        if not after:
-            # Existing/reused key fallback.
+    after = [k for k in pdb_info_dict.keys() if k not in before]
+    if not after:
+        for fp in (file_paths or []):
             key = _base_key(os.path.splitext(os.path.basename(fp))[0])
-            after = [key] if key in pdb_info_dict else []
+            if key in pdb_info_dict:
+                after.append(key)
 
-        for key in after:
-            if key not in pdb_info_dict:
-                continue
-            pdb_info_dict[key]["_segname_collision_mode"] = bool(use_segaware)
-            pdb_info_dict[key]["_node_index_policy"] = (
-                "segname_aware_full_identity"
-                if use_segaware
-                else "legacy_exact"
-            )
+    for key in after:
+        if key not in pdb_info_dict:
+            continue
+        pdb_info_dict[key]["_segname_collision_mode"] = False
+        pdb_info_dict[key]["_node_index_policy"] = "manuscript_compatible_legacy_graph"
 
-            if logger is not None:
-                _log(
-                    logger,
-                    "📌 Node/index mode: "
-                    + ("SEGNAME-aware (true identity collision detected).\n"
-                       if use_segaware
-                       else "legacy-compatible (no true SEGNAME collision).\n")
-                )
+    if logger is not None:
+        _log(logger, "📌 Node/index mode: manuscript-compatible legacy graph.\n")
 
     return pdb_info_dict
 
@@ -1258,11 +1249,10 @@ def _calculate_adj_and_edgeweight_matrix_segaware(pdb_data, rcutt):
 
 def calculate_adj_and_edgeweight_matrix(pdb_data, rcutt):
     """
-    Dispatch adjacency construction according to the node/index mode selected at
-    load time.  Scientific contact and edge-cost formulas are unchanged.
+    Construct the residue interaction network using the manuscript-compatible
+    legacy graph definition. The scientific contact normalization and edge-cost
+    formulas are unchanged.
     """
-    if bool((pdb_data or {}).get("_segname_collision_mode", False)):
-        return _calculate_adj_and_edgeweight_matrix_segaware(pdb_data, rcutt)
     return _calculate_adj_and_edgeweight_matrix_legacy_exact(pdb_data, rcutt)
 
 def save_matrix_to_file(matrix, filename):
@@ -7386,14 +7376,21 @@ def build_property_matrix_for_pdb(
         if freq < freq_threshold:
             continue
 
-        # Metadata lookup: try SEGNAME-free first, then SEGNAME-aware fallback
-        meta = meta_index.get(("", ch_u, rn_digits, ic_u))
+        # Metadata lookup: use SEGNAME-aware matching first.
+        # This is important for ribosome/large complexes where the same
+        # chain-residue number can occur under different SEGNAMEs.
+        meta = None
+
+        if seg_u:
+            meta = meta_index.get((seg_u, ch_u, rn_digits, ic_u))
+            if meta is None and ic_u is not None:
+                meta = meta_index.get((seg_u, ch_u, rn_digits, None))
+
+        # Fallback for ordinary proteins or legacy SEGNAME-free tokens.
+        if meta is None:
+            meta = meta_index.get(("", ch_u, rn_digits, ic_u))
         if meta is None and ic_u is not None:
             meta = meta_index.get(("", ch_u, rn_digits, None))
-        if meta is None:
-            meta = meta_index.get((seg_u, ch_u, rn_digits, ic_u))
-        if meta is None and ic_u is not None:
-            meta = meta_index.get((seg_u, ch_u, rn_digits, None))
 
         aa3 = meta["AA3"] if meta is not None else "UNK"
         seg_out = meta["Segname"] if meta is not None else ("" if seg is None else str(seg))
@@ -10013,4 +10010,5 @@ def save_global_total_colored_reference_pdb(jobname, paths_dict_2, reference_pdb
         _log(logger, f"⚠️ GLOBAL TOTAL map could not be saved: {e}\n")
 
     return out_pdb
+
 
