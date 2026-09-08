@@ -33,7 +33,7 @@ The standalone build allows MUSIKALL to be used without manually installing Pyth
 
 MUSIKALL can also be run in a web browser using Google Colab:
 
-[Open MUSIKALL in Google Colab](https://colab.research.google.com/drive/1Sr_BIIDFpsr_oROwXrh4QZawf9sAMDAp)
+[Open MUSIKALL in Google Colab](https://colab.research.google.com/drive/1_AxSHbPc0KUssatFdj71O5QvQn8DP9XZ)
 
 The Colab edition provides a browser-based workflow for pathway calculations and downstream analyses without requiring a local Python installation.
 
