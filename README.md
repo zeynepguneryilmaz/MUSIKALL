@@ -21,9 +21,11 @@ Biomolecular structures are represented as residue interaction networks, and com
 
 ## Windows Standalone Application
 
-A ready-to-use Windows build is available from the latest GitHub release:
+A ready-to-use Windows installer is available from the latest GitHub release:
 
 [Download MUSIKALL for Windows](https://github.com/zeynepguneryilmaz/MUSIKALL/releases/latest)
+
+Download `MUSIKALL_Setup.exe` from the **Assets** section of the release page and run the installer.
 
 The standalone build allows MUSIKALL to be used without manually installing Python or individual dependencies.
 
@@ -44,34 +46,3 @@ git clone https://github.com/zeynepguneryilmaz/MUSIKALL.git
 cd MUSIKALL
 pip install -r requirements.txt
 python MUSIKALL_gui1.py
-```
-
-## Building the Windows Application
-
-From the repository root, install the required packages and run PyInstaller with the provided spec file:
-
-```bash
-pip install -r requirements.txt
-pip install pyinstaller
-pyinstaller MUSIKALL.spec
-```
-
-The build output is written under `dist/MUSIKALL/`. The installer can then be compiled with Inno Setup using `musikall.iss`.
-
-## Version Note
-
-In the current release, path-similarity node handling uses a consistent node-to-global-index conversion workflow before incidence-matrix construction. The k-shortest path calculation, contact normalization, edge-cost definition, cosine similarity calculation, and threshold-based clustering method are unchanged.
-
-## Citation
-
-Citation metadata for MUSIKALL is maintained in the repository-level [`CITATION.cff`](CITATION.cff) file. On GitHub, use **Cite this repository** to obtain the current software citation.
-
-When the MUSIKALL journal article is published, the recommended article citation can be added to `CITATION.cff` as the preferred citation without changing the software interface.
-
-
-
-## License
-
-MUSIKALL is distributed under the MIT License. See [`LICENSE`](LICENSE).
-
-The repository also bundles third-party software used for molecular visualization. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for the applicable third-party license information.
