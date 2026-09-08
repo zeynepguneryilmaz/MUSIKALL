@@ -1,0 +1,105 @@
+✅ Job 'ribosome' created at C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\ribosome
+📂 2 PDB files selected.
+✅ ribo4v51_.pdb was processed and saved to:
+   C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\ribosome\pdb_files\ribo4v51_.pdb
+📌 Chains read:
+   • C (segname(s)=AC, BC, CC, EB, FB, GB, HB, IB, JB, KB, LB, MB, NB, OB, PB, QB, RB, SB, TB, UB, VB, WB, XB, YB, ZB): 1527 residues
+   • D (segname(s)=AD, BD, CD, DC, DD, EC, ED, FC, FD, GC, GD, HC, HD, IC, JC, KC, LC, MC, NC, OC, PC, QC, RC, SC, TC, UC, VC, WC, XC, YC, ZC): 2796 residues
+📌 Total nodes (standard residues): 4323
+✅ ribo4v67_.pdb was processed and saved to:
+   C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\ribosome\pdb_files\ribo4v67_.pdb
+📌 Chains read:
+   • C (segname(s)=AC, BC, CC, EB, FB, GB, HB, IB, JB, KB, LB, MB, NB, OB, PB, QB, RB, SB, TB, UB, VB, WB, XB, YB, ZB): 1530 residues
+   • D (segname(s)=AD, BD, CD, DC, DD, EC, ED, FC, FD, GC, GD, HC, HD, IC, JC, KC, LC, MC, NC, OC, PC, QC, RC, SC, TC, UC, VC, WC, XC, YC, ZC): 2901 residues
+📌 Total nodes (standard residues): 4431
+📌 Node/index mode: manuscript-compatible legacy graph.
+🔬 Calculating Adjacency matrices with cutoff 4.5Å...
+✅ adj & edgeweight matrices saved for ribo4v51_.
+✅ adj & edgeweight matrices saved for ribo4v67_.
+✅ Adjacency matrices stage completed.
+🔗 Alignment step before K-shortest…
+🔍 Starting alignment for C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\ribosome…
+ℹ️ Using already loaded reference 'ribo4v51_' from C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\ribosome\pdb_files\ribo4v51_.pdb
+✅ Reference source resolved in ribo4v51_: EB:C:530 -> index 514
+✅ Reference source resolved in ribo4v51_: EB:C:1492 -> index 1470
+✅ Reference source resolved in ribo4v51_: EB:C:1493 -> index 1471
+✅ Reference sink resolved in ribo4v51_: MC:D:2451 -> index 3878
+✅ Reference sink resolved in ribo4v51_: MC:D:2585 -> index 4012
+✅ Reference sink resolved in ribo4v51_: MC:D:2602 -> index 4029
+📌 Reference [ribo4v51_] seeded for KSP: 3 source(s), 3 sink(s).
+📌 Target [ribo4v67_] projected for KSP: 3 source(s), 3 sink(s).
+✅ Mapping results saved to Excel.
+✅ Mapping successfully completed!
+⏳ Calculating k=20 shortest paths…
+✅ Paths calculated & converted.
+🧪 Running property tracks for 2 structures (dims=hydrophobicity, charge, aromaticity, polarity, min_score=1, only_figures=False)
+[DEBUG] PropertyTracks | pdb=ribo4v51_ | canon=ribo4v51_ | freq_map_n=78 | chains=2 | residues=4323
+[DEBUG] rows_returned=78 for ribo4v51_
+[DEBUG] PropertyTracks | pdb=ribo4v67_ | canon=ribo4v67_ | freq_map_n=104 | chains=2 | residues=4431
+[DEBUG] rows_returned=104 for ribo4v67_
+📁 Property table saved to:
+   • C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\ribosome\property_tracks_all.xlsx
+🎨 Shared property-track legend saved:
+   • C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\ribosome\PROPERTY_TRACKS__LEGEND.png
+📊 Property track figure saved for ribo4v51_:
+   • C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\ribosome\ribo4v51_\ribo4v51__property_tracks_score1.png
+📊 Property track figure saved for ribo4v67_:
+   • C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\ribosome\ribo4v67_\ribo4v67__property_tracks_score1.png
+🧩 All structures combined property track saved:
+   • C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\ribosome\ALL_property_tracks_score1.png
+🧩 Backbone Ensemble: selected structures = 2/2
+Backbone ribo4v51_:
+  paths_total=180 paths_used=180 skipped_all_unmapped=0
+  nodes_seen=4213 nodes_mapped=4213 one_based_hint=False
+  N(adj)=4323  N(final)=4323  used(m)=83
+  out=C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\ribosome\cooccurrence_backbone\per_structure\ribo4v51_\BACKBONE__PERCENT__ribo4v51___K180__m83.png
+Backbone ribo4v67_:
+  paths_total=180 paths_used=180 skipped_all_unmapped=0
+  nodes_seen=4212 nodes_mapped=4212 one_based_hint=False
+  N(adj)=4431  N(final)=4431  used(m)=107
+  out=C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\ribosome\cooccurrence_backbone\per_structure\ribo4v67_\BACKBONE__PERCENT__ribo4v67___K180__m107.png
+🧬 Backbone Ensemble: building ENSEMBLE from 2 structures (ref index-space=ribo4v51_) | pairs=18
+Backbone __ENSEMBLE__:
+  paths_total=360 paths_used=360 skipped_all_unmapped=0
+  nodes_seen=8425 nodes_mapped=8425 one_based_hint=False
+  N(adj)=4323  N(final)=4323  used(m)=113
+  out=C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\ribosome\cooccurrence_backbone\ensemble\BACKBONE__PERCENT____ENSEMBLE____K360__m113.png
+✅ Backbone Ensemble: ENSEMBLE outputs saved.
+✅ Done. 2 MIDI file(s) created.
+✅ Done. 360 MIDI file(s) created.
+🎨 Saving Colored PDBs (per-PDB + GLOBAL/TOTAL)...
+📁 Job dir: C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\ribosome
+📁 PDB dir: C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\ribosome\pdb_files
+🎨 Saving colored PDBs: per-PDB normalized + per-PDB TOTAL + GLOBAL TOTAL...
+✅ Per-PDB normalized colored: C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\ribosome\ribo4v51_\ribo4v51__colored.pdb
+✅ Per-PDB TOTAL colored: C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\ribosome\ribo4v51_\ribo4v51__total_colored.pdb
+✅ Per-PDB normalized colored: C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\ribosome\ribo4v67_\ribo4v67__colored.pdb
+✅ Per-PDB TOTAL colored: C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\ribosome\ribo4v67_\ribo4v67__total_colored.pdb
+✅ GLOBAL TOTAL colored: C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\ribosome\GLOBAL_TOTAL__ribo4v51___colored.pdb
+🎨 Finished saving colored PDBs.
+🎨 Per-PDB colored models saved.
+✅ GLOBAL TOTAL colored PDB written: C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\ribosome\GLOBAL_TOTAL__ribo4v51___colored.pdb
+✅ GLOBAL TOTAL map saved: C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\ribosome\GLOBAL_TOTAL__frequencies.json
+🎨 GLOBAL/TOTAL colored reference PDB saved in the job folder.
+🧩 Path Similarity Ensemble: selected structures = 2/2
+PathSimilarity ribo4v51_:
+  paths_total=180 paths_used=180 skipped_all_unmapped=0
+  nodes_seen=4213 nodes_mapped=4213 one_based_hint=False
+  threshold=0.70 clusters=3
+  edgeweight_matrix_found=True
+  out=C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\ribosome\path_similarity\per_structure\ribo4v51_\PATHSIM__COSINE_ORDERED__ribo4v51___K180__thr0.70.png
+PathSimilarity ribo4v67_:
+  paths_total=180 paths_used=180 skipped_all_unmapped=0
+  nodes_seen=4212 nodes_mapped=4212 one_based_hint=False
+  threshold=0.70 clusters=3
+  edgeweight_matrix_found=True
+  out=C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\ribosome\path_similarity\per_structure\ribo4v67_\PATHSIM__COSINE_ORDERED__ribo4v67___K180__thr0.70.png
+🧬 Path Similarity Ensemble: building ENSEMBLE from 2 structures (ref index-space=ribo4v51_) | pairs=18
+PathSimilarity __ENSEMBLE__:
+  paths_total=360 paths_used=360 skipped_all_unmapped=0
+  nodes_seen=8425 nodes_mapped=8425 one_based_hint=False
+  threshold=0.70 clusters=3
+  edgeweight_matrix_found=True
+  out=C:\Users\ozde_zeynep\Documents\MUSIKALL Projects\ribosome\path_similarity\ensemble\PATHSIM__COSINE_ORDERED____ENSEMBLE____K360__thr0.70.png
+✅ Path Similarity Ensemble: ENSEMBLE outputs saved.
+✅ Interactive viewer cache prepared.
